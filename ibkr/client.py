@@ -18,9 +18,11 @@ class IBKRClient:
     """
 
     def __init__(self, host: str | None = None, port: int | None = None, client_id: int | None = None):
-        self.host = host or os.environ.get("IBKR_HOST", DEFAULT_HOST)
-        self.port = int(port or os.environ.get("IBKR_PORT", DEFAULT_PORT))
-        self.client_id = int(client_id or os.environ.get("IBKR_CLIENT_ID", DEFAULT_CLIENT_ID))
+        self.host = host if host is not None else os.environ.get("IBKR_HOST", DEFAULT_HOST)
+        self.port = int(port if port is not None else os.environ.get("IBKR_PORT", DEFAULT_PORT))
+        self.client_id = int(
+            client_id if client_id is not None else os.environ.get("IBKR_CLIENT_ID", DEFAULT_CLIENT_ID)
+        )
         self.ib = IB()
 
     def connect(self, timeout: float = 10) -> IB:

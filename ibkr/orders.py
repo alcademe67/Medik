@@ -11,8 +11,10 @@ class OrderRejected(Exception):
 
 def _qualified_stock(ib: IB, symbol: str, exchange: str, currency: str) -> Stock:
     contract = Stock(symbol, exchange, currency)
-    ib.qualifyContracts(contract)
-    return contract
+    qualified = ib.qualifyContracts(contract)
+    if not qualified:
+        raise ValueError(f"Could not qualify contract for {symbol} on {exchange}/{currency}")
+    return qualified[0]
 
 
 def place_limit_order(
