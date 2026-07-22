@@ -24,6 +24,7 @@ from pathlib import Path
 
 from ib_async import IB
 
+from ibkr.client import IBKRClient
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
 from strategy.config import DEFAULT_CONFIG
@@ -55,8 +56,8 @@ def assert_paper_account(ib: IB) -> None:
 
 
 def main() -> None:
-    ib = IB()
-    ib.connect("127.0.0.1", PAPER_PORT, clientId=42, timeout=10)
+    client = IBKRClient(host="127.0.0.1", port=PAPER_PORT, client_id=42)
+    ib = client.connect(retries=5)
     assert_paper_account(ib)
 
     available_funds = None

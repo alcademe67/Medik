@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 from ib_async import IB
 
@@ -25,9 +26,20 @@ class IBKRClient:
         )
         self.ib = IB()
 
-    def connect(self, timeout: float = 10) -> IB:
-        self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=timeout)
-        return self.ib
+    def connect(self, timeout: float = 10, retries: int = 5, backoff: float = 2.0) -> IB:
+        """Connect with exponential-backoff retries (2s, 4s, 8s, ... between
+        attempts) so a TWS restart or brief network blip doesn't kill an
+        unattended run. Raises the last error once retries are exhausted."""
+        attempt = 0
+        while True:
+            try:
+                self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=timeout)
+                return self.ib
+            except Exception:
+                attempt += 1
+                if attempt > retries:
+                    raise
+                time.sleep(backoff * 2 ** (attempt - 1))
 
     def disconnect(self) -> None:
         if self.ib.isConnected():
