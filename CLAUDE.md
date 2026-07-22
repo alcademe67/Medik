@@ -24,6 +24,10 @@ this repo or via connected IBKR tools. They are enforced in code by
   includes existing positions — analysis and recommendations yes,
   unilateral buying/selling/shorting no.
 - Prefer limit orders over market orders on the live account.
+- **Unattended/hands-free automation is allowed ONLY against the paper
+  account** (`examples/autotrade_paper.py`: TWS paper port 7497, aborts
+  unless every managed account id starts with "D"). The live account
+  always keeps a human tap between signal and execution.
 - The live TWS socket is 127.0.0.1:7496; scripts here only work while the
   owner's TWS is open and logged in.
 
