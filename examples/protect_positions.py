@@ -64,8 +64,8 @@ def main() -> None:
         print(f"\n{symbol}: {qty} sh @ avg {avg:.2f}")
         print(f"  stop-loss  SELL {qty} STP {stop}  (GTC)")
         print(f"  take-profit SELL {qty} LMT {target}  (GTC)")
-        answer = input(f"  Type YES to place this linked pair for {symbol}: ").strip()
-        if answer != "YES":
+        answer = input(f"  Type YES to place this linked pair for {symbol}: ").strip().upper()
+        if answer not in ("YES", "Y"):
             print(f"  {symbol} skipped.")
             continue
 

@@ -87,8 +87,8 @@ def main() -> None:
             continue
 
         print(f"{symbol}: BUY {qty} @ {entry} (~${notional:.2f})  stop {stop}  target {target}  [{note}]")
-        answer = input(f"  Type YES to place this {symbol} bracket order: ").strip()
-        if answer != "YES":
+        answer = input(f"  Type YES to place this {symbol} bracket order: ").strip().upper()
+        if answer not in ("YES", "Y"):
             print(f"  {symbol} skipped.\n")
             continue
 
