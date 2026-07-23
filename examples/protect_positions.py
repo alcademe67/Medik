@@ -18,6 +18,11 @@ from __future__ import annotations
 
 from ib_async import LimitOrder, Order, StopOrder
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from ibkr.client import IBKRClient
 from strategy.config import DEFAULT_CONFIG
 

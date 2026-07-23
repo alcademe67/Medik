@@ -24,6 +24,11 @@ from pathlib import Path
 
 from ib_async import IB
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from ibkr.client import IBKRClient
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe

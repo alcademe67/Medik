@@ -8,6 +8,11 @@ Usage:
     python examples/place_order_example.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from ibkr.client import IBKRClient
 from ibkr.orders import place_limit_order
 
