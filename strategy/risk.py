@@ -12,6 +12,12 @@ class RiskRejected(Exception):
     """Raised when a candidate trade fails a hard risk rule."""
 
 
+def portfolio_headroom(net_liquidation: float, gross_position_value: float, config: StrategyConfig) -> float:
+    """Capital still deployable before the account hits its max-invested
+    ceiling (e.g. 80% of equity). New entries must fit inside this."""
+    return max(0.0, config.max_deployed_pct * net_liquidation - gross_position_value)
+
+
 @dataclass(frozen=True)
 class PositionPlan:
     side: str  # "BUY" or "SELL" (SELL = short entry)

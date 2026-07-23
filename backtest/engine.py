@@ -132,6 +132,17 @@ def run_backtest(
                 except RiskRejected:
                     plan = None
                 if plan is not None:
+                    # portfolio-level cap: total invested must stay under max_deployed_pct of equity
+                    open_val = sum(
+                        p.quantity * last_close.get(s, p.entry_price)
+                        if p.side == "BUY"
+                        else p.quantity * (2 * p.entry_price - last_close.get(s, p.entry_price))
+                        for s, p in open_positions.items()
+                    )
+                    equity = cash + open_val
+                    if open_val + plan.position_value > config.max_deployed_pct * equity:
+                        plan = None
+                if plan is not None:
                     cash -= plan.position_value
                     trades.append(
                         Trade(

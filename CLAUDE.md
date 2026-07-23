@@ -8,6 +8,10 @@ this repo or via connected IBKR tools. They are enforced in code by
 
 1. **Max 20% of available funds per trade.** Never size a single position
    above 20% of the account's current available funds (not net liquidation).
+1b. **Max 80% of the account deployed in total** (rule updated by the owner,
+   2026-07-23). Positions may stack up to 80% of equity combined; at least
+   20% of equity always stays in cash. Enforced via
+   `strategy.risk.portfolio_headroom`.
 2. **Minimum 1:3 risk/reward.** Reject any setup whose target is less than
    3x the stop distance from entry.
 3. **Multi-indicator confirmation required.** A trade signal only counts if

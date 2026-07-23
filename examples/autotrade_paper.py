@@ -28,7 +28,7 @@ from ibkr.client import IBKRClient
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
 from strategy.config import DEFAULT_CONFIG
-from strategy.risk import RiskRejected, size_position
+from strategy.risk import RiskRejected, portfolio_headroom, size_position
 from strategy.signals import compute_indicator_frame, evaluate
 
 PAPER_PORT = 7497
@@ -60,13 +60,17 @@ def main() -> None:
     ib = client.connect(retries=5)
     assert_paper_account(ib)
 
-    available_funds = None
+    available_funds = net_liq = gross_pos = None
     for row in ib.accountSummary():
         if row.tag == "AvailableFunds":
             available_funds = float(row.value)
-            break
-    if available_funds is None:
-        raise SystemExit("could not read AvailableFunds")
+        elif row.tag == "NetLiquidation":
+            net_liq = float(row.value)
+        elif row.tag == "GrossPositionValue":
+            gross_pos = float(row.value)
+    if available_funds is None or net_liq is None:
+        raise SystemExit("could not read account summary values")
+    headroom = portfolio_headroom(net_liq, gross_pos or 0.0, DEFAULT_CONFIG)
 
     held = {p.contract.symbol for p in ib.positions() if p.position != 0}
     pending = {t.contract.symbol for t in ib.openTrades()}
@@ -98,6 +102,10 @@ def main() -> None:
         except RiskRejected as exc:
             log_event({"event": "sizing_rejected", "symbol": symbol, "reason": str(exc)})
             continue
+        if plan.position_value > headroom:
+            log_event({"event": "headroom_rejected", "symbol": symbol,
+                       "needed": plan.position_value, "headroom": headroom})
+            continue
 
         contract = data_contract(ib, symbol)
         if contract is None:
@@ -114,6 +122,7 @@ def main() -> None:
             ib.placeOrder(contract, order)
         ib.sleep(1)
         entered += 1
+        headroom -= plan.position_value
         log_event({
             "event": "bracket_placed", "symbol": symbol, "side": plan.side,
             "qty": plan.quantity, "entry": plan.entry, "stop": plan.stop,

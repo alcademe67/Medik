@@ -11,6 +11,7 @@ from dataclasses import dataclass
 class StrategyConfig:
     # Position sizing
     max_position_pct: float = 0.20  # never commit more than 20% of available funds to one trade
+    max_deployed_pct: float = 0.80  # total invested across ALL positions; >=20% of equity stays cash
     min_risk_reward: float = 3.0  # reject any setup with reward:risk below 1:3
 
     # Trend filter (EMA crossover)
