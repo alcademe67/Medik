@@ -1,3 +1,9 @@
+# Telegram bot (bot/ package)
 python-telegram-bot>=21.0
 httpx>=0.27
 python-dotenv>=1.0
+
+# Trading research engine (trading/ package) — Phase 1
+ccxt>=4.2
+pandas>=2.0
+numpy>=1.24
