@@ -84,9 +84,13 @@ Cloud Free Tier (or any Linux VM): install Docker, clone the repo, create
 
 ## Notifications
 
-Telegram alerts fire on: engine start/stop, buys, sells, stop-losses,
-take-profits, and errors. Configure `TELEGRAM_BOT_TOKEN` and
-`TELEGRAM_OWNER_ID` in `.env` (see the main README).
+Alerts fire on: engine start/stop, buys, sells, stop-losses, take-profits,
+and errors — to whichever channel(s) you configure (both work; pick one):
+
+- **ntfy (no account, easiest):** install the free *ntfy* app, choose a
+  unique topic, set `NTFY_TOPIC` in `.env`, and subscribe to that topic in
+  the app. Test with `python -m bot.notify`.
+- **Telegram:** set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_OWNER_ID`.
 
 ## Troubleshooting
 

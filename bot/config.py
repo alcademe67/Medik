@@ -36,6 +36,13 @@ try:
 except ValueError:
     TELEGRAM_OWNER_ID = 0
 
+# --- Notifications: ntfy (free phone push, no account needed) ---
+# Pick a UNIQUE, hard-to-guess topic name (ntfy.sh topics are public, so
+# treat the name like a password), put it here, and subscribe to the same
+# topic in the ntfy phone app. That's the whole setup.
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
+
 # --- Auto-trading (signal bot) ---
 # LIVE_TRADING is the master safety switch. It stays FALSE until you have
 # watched the bot in dry-run and deliberately turn it on:
