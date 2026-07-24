@@ -18,3 +18,19 @@ OPENFDA_BASE_URL = os.getenv("OPENFDA_BASE_URL", "https://api.fda.gov")
 OPENFDA_API_KEY = os.getenv("OPENFDA_API_KEY", "")
 
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
+
+# KuCoin — create keys under Account > API Management on kucoin.com.
+# For this bot the read-only "General" permission is enough; never give
+# a chat bot keys with Trade, Transfer or Withdraw enabled.
+KUCOIN_BASE_URL = os.getenv("KUCOIN_BASE_URL", "https://api.kucoin.com")
+KUCOIN_API_KEY = os.getenv("KUCOIN_API_KEY", "")
+KUCOIN_API_SECRET = os.getenv("KUCOIN_API_SECRET", "")
+KUCOIN_API_PASSPHRASE = os.getenv("KUCOIN_API_PASSPHRASE", "")
+KUCOIN_KEY_VERSION = os.getenv("KUCOIN_KEY_VERSION", "2")
+
+# Your numeric Telegram user id — /balance answers only this user.
+# Find yours by messaging @userinfobot on Telegram.
+try:
+    TELEGRAM_OWNER_ID = int(os.getenv("TELEGRAM_OWNER_ID", "0"))
+except ValueError:
+    TELEGRAM_OWNER_ID = 0

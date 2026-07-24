@@ -1,11 +1,13 @@
 # Medik
 
-A Telegram bot that shows **how to add an API to a bot**: it takes a chat
-command, calls an external HTTP API (the free [openFDA](https://open.fda.gov/apis/drug/label/)
-drug-label API), and turns the JSON response into a readable reply.
+A Telegram bot that shows **how to add an API to a bot** — the same
+recipe applied twice:
 
-Send it `/drug ibuprofen` and it answers with the medicine's purpose,
-uses, warnings, and dosage straight from the FDA database.
+- **openFDA** (free, no key): `/drug ibuprofen` → the medicine's purpose,
+  uses, warnings, and dosage from the FDA drug-label database.
+- **KuCoin** (your API keys): `/price BTC` → live market price (public,
+  works without keys), and `/balance` → your account balances via
+  signed requests (owner-only).
 
 ## The recipe: adding any API to any bot
 
@@ -15,10 +17,11 @@ WhatsApp, and whatever API you're calling:
 1. **Keep credentials out of the code.** Bot tokens and API keys go in
    environment variables (here: a `.env` file loaded by
    [`bot/config.py`](bot/config.py), with `.env` listed in `.gitignore`).
-2. **Put all API calls in one module.** [`bot/api_client.py`](bot/api_client.py)
-   is the only file that knows the API's URL, parameters, and JSON shape.
-   It exposes one function (`fetch_drug_label`) that returns a plain dict.
-   Swapping APIs later means rewriting one file, not the whole bot.
+2. **Put all API calls in one module per API.** [`bot/api_client.py`](bot/api_client.py)
+   is the only file that knows openFDA's URL, parameters, and JSON shape;
+   [`bot/kucoin_client.py`](bot/kucoin_client.py) is the only file that
+   knows KuCoin's. Each exposes plain functions returning plain dicts.
+   Swapping or adding APIs means touching one file, not the whole bot.
 3. **Call that module from your command handler.** In
    [`bot/main.py`](bot/main.py), the `/drug` handler parses the user's
    text, awaits `api_client.fetch_drug_label(...)`, and formats the result.
@@ -49,8 +52,40 @@ Open your bot in Telegram and try:
 
 ```
 /drug ibuprofen
-/drug tylenol
+/price BTC
+/price ETH-EUR
 ```
+
+`/drug` and `/price` work with no API keys at all — only `/balance`
+needs your KuCoin credentials.
+
+## Hooking up your KuCoin keys
+
+1. On kucoin.com go to **Account → API Management → Create API**. You'll
+   choose an **API passphrase** (remember it — the bot needs it too) and
+   get an **API key** and **API secret**. Tick **only the "General"
+   permission**: this bot just reads data, and a chat bot should never
+   hold keys that can trade or withdraw funds.
+2. Open your `.env` and paste in all three values, plus your own
+   Telegram id so nobody else can ask the bot for your balances:
+
+   ```
+   KUCOIN_API_KEY=6423abc...
+   KUCOIN_API_SECRET=f81c2d90-...
+   KUCOIN_API_PASSPHRASE=the-passphrase-you-chose
+   KUCOIN_KEY_VERSION=2
+   TELEGRAM_OWNER_ID=123456789     # from @userinfobot on Telegram
+   ```
+3. Restart the bot and send it `/balance`.
+
+How the authentication works: for every private request the client signs
+`timestamp + METHOD + path + body` with your API secret (HMAC-SHA256,
+base64) and sends the result in the `KC-API-*` headers — see
+`_signed_headers()` in [`bot/kucoin_client.py`](bot/kucoin_client.py).
+That's the pattern most exchange APIs use, so it ports directly.
+
+If a key ever leaks (pasted in a chat, committed by accident), delete it
+in KuCoin's API Management immediately and create a fresh one.
 
 ## Swap in your own API
 
@@ -69,12 +104,14 @@ it to the `headers=` dict where the `httpx.AsyncClient` is created.
 
 ```
 bot/
-├── main.py        # entry point: commands, formatting, error replies
-├── api_client.py  # the API integration — all HTTP lives here
-└── config.py      # tokens & settings, read from environment/.env
-.env.example       # template for your local .env (never commit .env)
-requirements.txt   # python-telegram-bot, httpx, python-dotenv
+├── main.py          # entry point: commands, formatting, error replies
+├── api_client.py    # openFDA integration (keyless API example)
+├── kucoin_client.py # KuCoin integration (public + signed endpoints)
+└── config.py        # tokens & settings, read from environment/.env
+.env.example         # template for your local .env (never commit .env)
+requirements.txt     # python-telegram-bot, httpx, python-dotenv
 ```
 
 *Drug information comes from FDA product labels via openFDA and is not
-medical advice.*
+medical advice. Market data comes from KuCoin and is not financial
+advice.*
