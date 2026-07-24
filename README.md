@@ -13,8 +13,10 @@ safety-gated order helpers, market-data utilities, and runnable examples.
   submit unless `confirm=True` is passed explicitly.
 - `kucoin/data.py` - ticker and candle helpers (`last_price`,
   `best_bid_ask`, `recent_candles`).
-- `examples/` - read-only connectivity test, a price monitor loop, and a
-  dry-run-by-default order example.
+- `kucoin/portfolio.py` - pure balance-summary helpers (`aggregate_by_currency`,
+  `value_in_usdt`, `summarize`) used to total a portfolio in USDT.
+- `examples/` - read-only connectivity test, a balance summary, a price
+  monitor loop, and a dry-run-by-default order example.
 - `tests/` - offline unit tests (signing vectors, order safety gates,
   candle parsing). No network required.
 
@@ -37,6 +39,9 @@ Run everything from the repository root:
 ```bash
 # Read-only smoke test: server time, BTC-USDT ticker, balances (if keys set)
 python -m examples.kucoin_connect_test
+
+# Balance summary: non-zero holdings plus an estimated total USDT value
+python -m examples.kucoin_balance
 
 # Poll a ticker and announce threshold crossings (read-only)
 python -m examples.kucoin_price_monitor --symbol BTC-USDT --above 120000 --below 100000
