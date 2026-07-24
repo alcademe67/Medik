@@ -13,8 +13,10 @@ https://www.kucoin.com/docs is implemented in _signed_headers().
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -168,3 +170,72 @@ async def fetch_balances() -> list[dict[str, str]]:
     ]
     balances.sort(key=lambda b: b["currency"])
     return balances
+
+
+async def fetch_klines(
+    symbol: str, kline_type: str = "5min", limit: int = 200
+) -> list[float]:
+    """Recent candles for `symbol`, returned as oldest-to-newest closes.
+
+    Public endpoint, no auth. KuCoin returns newest-first rows of
+    [time, open, close, high, low, volume, turnover]; we reverse to
+    oldest-first and pull out the close (index 2) for the strategy.
+    """
+    try:
+        response = await _get_client().get(
+            "/api/v1/market/candles",
+            params={"symbol": symbol, "type": kline_type},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("KuCoin request failed: %s", exc)
+        raise KucoinError("could not reach KuCoin") from exc
+
+    rows = _data_or_raise(response) or []
+    closes = [float(row[2]) for row in reversed(rows)]
+    return closes[-limit:]
+
+
+async def place_market_order(
+    symbol: str, side: str, *, funds: str | float | None = None,
+    size: str | float | None = None,
+) -> dict[str, Any]:
+    """Place a MARKET order. Signed; requires the Trade permission.
+
+    SAFETY: this refuses to touch the network unless config.LIVE_TRADING
+    is true. In dry-run (the default) it returns a simulated result and
+    sends nothing — so no bug in any caller can spend real money by
+    accident. Exactly one of `funds` (quote amount, for buys) or `size`
+    (base amount, for sells) must be given.
+    """
+    if (funds is None) == (size is None):
+        raise ValueError("pass exactly one of funds= or size=")
+
+    order = {
+        "clientOid": uuid.uuid4().hex,
+        "side": side,
+        "symbol": symbol,
+        "type": "market",
+    }
+    if funds is not None:
+        order["funds"] = str(funds)
+    else:
+        order["size"] = str(size)
+
+    if not config.LIVE_TRADING:
+        logger.info("DRY-RUN: would place order %s", order)
+        return {"dryRun": True, "order": order}
+
+    path = "/api/v1/orders"
+    # The signed body must be byte-for-byte what we send, so build the
+    # JSON string once and reuse it for both the signature and the POST.
+    body = json.dumps(order, separators=(",", ":"))
+    headers = _signed_headers("POST", path, body)
+    headers["Content-Type"] = "application/json"
+    try:
+        response = await _get_client().post(path, headers=headers, content=body)
+    except httpx.HTTPError as exc:
+        logger.warning("KuCoin order failed: %s", exc)
+        raise KucoinError("could not reach KuCoin to place order") from exc
+
+    data = _data_or_raise(response) or {}
+    return {"dryRun": False, "orderId": data.get("orderId"), "order": order}

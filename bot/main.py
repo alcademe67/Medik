@@ -11,6 +11,9 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from bot import api_client, config, kucoin_client
+from bot.trader import Trader
+
+_trader: Trader | None = None
 
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
@@ -47,6 +50,7 @@ async def help_command(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "/drug <name> — look up a medicine by brand or generic name\n"
         "/price <coin> — live KuCoin price, e.g. /price BTC or /price ETH-EUR\n"
         "/balance — your KuCoin balances (bot owner only)\n"
+        "/autotrade on|off|status — run the signal bot (owner only)\n"
         "/help — this message\n\n" + DISCLAIMER
     )
 
@@ -183,7 +187,61 @@ async def balance(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
+def _is_owner(update: Update) -> bool:
+    user = update.effective_user
+    return bool(config.TELEGRAM_OWNER_ID) and user is not None and (
+        user.id == config.TELEGRAM_OWNER_ID
+    )
+
+
+async def autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update):
+        await update.message.reply_text(
+            "Sorry, /autotrade is owner-only. Set TELEGRAM_OWNER_ID in .env "
+            "to your Telegram id (from @userinfobot)."
+        )
+        return
+
+    action = context.args[0].lower() if context.args else "status"
+
+    if action == "on":
+        if not (
+            config.KUCOIN_API_KEY
+            and config.KUCOIN_API_SECRET
+            and config.KUCOIN_API_PASSPHRASE
+        ):
+            await update.message.reply_text("Set your KuCoin keys in .env first.")
+            return
+        if _trader.start():
+            mode = "LIVE 💸 — REAL orders" if config.LIVE_TRADING else "DRY-RUN — no real orders"
+            await update.message.reply_text(
+                f"Auto-trader started ({mode}).\n"
+                f"{config.TRADE_SYMBOL}, MA({config.FAST_MA}/{config.SLOW_MA}), "
+                f"every {config.TRADE_INTERVAL_SECONDS:.0f}s.\n"
+                "Stop any time with /autotrade off."
+            )
+        else:
+            await update.message.reply_text("Auto-trader is already running.")
+    elif action == "off":
+        if await _trader.stop():
+            await update.message.reply_text("Auto-trader stopped.")
+        else:
+            await update.message.reply_text("Auto-trader is not running.")
+    else:  # status
+        mode = "LIVE 💸" if config.LIVE_TRADING else "DRY-RUN"
+        await update.message.reply_text(
+            f"Auto-trader: {'running' if _trader.running else 'stopped'}\n"
+            f"Mode: {mode}\n"
+            f"Symbol: {config.TRADE_SYMBOL}\n"
+            f"Strategy: MA crossover ({config.FAST_MA}/{config.SLOW_MA})\n"
+            f"Funds/order: {config.TRADE_FUNDS_PER_ORDER}\n"
+            f"Orders today: {_trader.orders_today}/{config.MAX_DAILY_ORDERS}"
+        )
+
+
 async def _shutdown(_: Application) -> None:
+    if _trader is not None:
+        await _trader.stop()
     await api_client.aclose()
     await kucoin_client.aclose()
 
@@ -200,11 +258,21 @@ def main() -> None:
         .post_shutdown(_shutdown)
         .build()
     )
+
+    global _trader
+
+    async def _notify(message: str) -> None:
+        if config.TELEGRAM_OWNER_ID:
+            await app.bot.send_message(chat_id=config.TELEGRAM_OWNER_ID, text=message)
+
+    _trader = Trader(notify=_notify)
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("drug", drug))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("autotrade", autotrade))
 
     logger.info("Bot starting (long polling)…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

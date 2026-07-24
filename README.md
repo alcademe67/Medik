@@ -6,8 +6,10 @@ recipe applied twice:
 - **openFDA** (free, no key): `/drug ibuprofen` → the medicine's purpose,
   uses, warnings, and dosage from the FDA drug-label database.
 - **KuCoin** (your API keys): `/price BTC` → live market price (public,
-  works without keys), and `/balance` → your account balances via
-  signed requests (owner-only).
+  works without keys), `/balance` → your account balances via signed
+  requests (owner-only), and `/autotrade` → a signal-based trading bot
+  that **defaults to dry-run and places no real orders** until you turn
+  live trading on yourself.
 
 ## The recipe: adding any API to any bot
 
@@ -87,6 +89,40 @@ That's the pattern most exchange APIs use, so it ports directly.
 If a key ever leaks (pasted in a chat, committed by accident), delete it
 in KuCoin's API Management immediately and create a fresh one.
 
+## Auto-trading (signal bot) — read before you go live
+
+> **Money warning.** Automated trading can lose money quickly, and simple
+> strategies like the built-in one usually do. Nothing here is financial
+> advice. Treat live trading as spending money you can afford to lose.
+
+The bot ships in **dry-run mode**: it computes signals and tells you the
+trades it *would* make, but places **no real orders**. This lets you see
+the whole thing work before a cent is at risk. The safe path:
+
+1. **Watch it on paper.** With `LIVE_TRADING=false` (the default), send
+   `/autotrade on`. The bot messages you every time its strategy would
+   buy or sell. Leave it running for a while and see if you like what it
+   does. Stop with `/autotrade off`, check state with `/autotrade status`.
+2. **Understand the strategy.** It's a moving-average crossover in
+   [`bot/strategy.py`](bot/strategy.py) — buy when the fast average
+   crosses above the slow one, sell when it crosses back. Tune `FAST_MA`,
+   `SLOW_MA`, `KLINE_TYPE`, and `TRADE_SYMBOL` in `.env`, or rewrite that
+   one file with your own rule.
+3. **Only then, go live — deliberately.** To place real orders you must:
+   - create a KuCoin key with the **Trade** permission enabled (the
+     read-only key from above can't trade), and
+   - set `LIVE_TRADING=true` in `.env`, then restart the bot.
+
+   Even live, it's bounded by `TRADE_FUNDS_PER_ORDER` (keep it tiny, e.g.
+   5 USDT) and `MAX_DAILY_ORDERS` (a hard daily cap so a bug or a flapping
+   signal can't keep firing). Start with the smallest amounts KuCoin
+   allows.
+
+The order-placement code (`place_market_order` in
+[`bot/kucoin_client.py`](bot/kucoin_client.py)) physically refuses to hit
+the network unless `LIVE_TRADING` is true, so dry-run cannot spend money
+even if something else has a bug.
+
 ## Swap in your own API
 
 1. Change `OPENFDA_BASE_URL` (and key) in `.env` / `bot/config.py` to your
@@ -106,7 +142,9 @@ it to the `headers=` dict where the `httpx.AsyncClient` is created.
 bot/
 ├── main.py          # entry point: commands, formatting, error replies
 ├── api_client.py    # openFDA integration (keyless API example)
-├── kucoin_client.py # KuCoin integration (public + signed endpoints)
+├── kucoin_client.py # KuCoin integration (public + signed + order placement)
+├── strategy.py      # trading signal logic (pure, swap in your own rule)
+├── trader.py        # the autonomous loop (dry-run by default)
 └── config.py        # tokens & settings, read from environment/.env
 .env.example         # template for your local .env (never commit .env)
 requirements.txt     # python-telegram-bot, httpx, python-dotenv
