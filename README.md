@@ -108,6 +108,8 @@ the whole thing work before a cent is at risk. The safe path:
    crosses above the slow one, sell when it crosses back. Tune `FAST_MA`,
    `SLOW_MA`, `KLINE_TYPE`, and `TRADE_SYMBOL` in `.env`, or rewrite that
    one file with your own rule.
+   **Test it on past prices first** with the backtester (below) — it
+   needs no keys and no risk.
 3. **Only then, go live — deliberately.** To place real orders you must:
    - create a KuCoin key with the **Trade** permission enabled (the
      read-only key from above can't trade), and
@@ -122,6 +124,41 @@ The order-placement code (`place_market_order` in
 [`bot/kucoin_client.py`](bot/kucoin_client.py)) physically refuses to hit
 the network unless `LIVE_TRADING` is true, so dry-run cannot spend money
 even if something else has a bug.
+
+### Backtesting — try the strategy on history first
+
+Before dry-run, before live, see how the strategy *would have* done on
+real past prices. No API keys needed (candle data is public):
+
+```bash
+python -m bot.backtest                 # uses TRADE_SYMBOL / KLINE_TYPE from .env
+python -m bot.backtest ETH-USDT 15min  # or pick a coin and candle size
+```
+
+You get a report like:
+
+```
+Backtest — BTC-USDT @ 5min  (1500 candles)
+Strategy: MA crossover (9/21), fee 0.10% per trade
+--------------------------------------------
+Round-trip trades : 23
+Win rate          : 43.5%
+Strategy return   : +2.14%
+Buy & hold return : +5.80%
+Max drawdown      : 8.20%
+Final equity      : 1021.40 (from 1000)
+--------------------------------------------
+Verdict: strategy LAGGED buy & hold by -3.66 points.
+Past performance does not predict future results.
+```
+
+Or run it in Telegram: `/backtest BTC 1hour`. The backtester replays the
+**same** signal function the live bot uses ([`bot/strategy.py`](bot/strategy.py)),
+so what you measure is what you'd trade. Two honest caveats: it assumes
+you fill exactly at each candle's close (real fills are slightly worse),
+and a good past result is never a promise about the future. The number
+that matters most is the **edge over buy & hold** — if the strategy can't
+beat simply holding the coin, it isn't worth running.
 
 ## Swap in your own API
 
@@ -145,6 +182,7 @@ bot/
 ├── kucoin_client.py # KuCoin integration (public + signed + order placement)
 ├── strategy.py      # trading signal logic (pure, swap in your own rule)
 ├── trader.py        # the autonomous loop (dry-run by default)
+├── backtest.py      # replay the strategy on historical prices
 └── config.py        # tokens & settings, read from environment/.env
 .env.example         # template for your local .env (never commit .env)
 requirements.txt     # python-telegram-bot, httpx, python-dotenv

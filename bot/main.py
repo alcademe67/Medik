@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from bot import api_client, config, kucoin_client
+from bot import api_client, backtest, config, kucoin_client
 from bot.trader import Trader
 
 _trader: Trader | None = None
@@ -50,6 +50,7 @@ async def help_command(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "/drug <name> — look up a medicine by brand or generic name\n"
         "/price <coin> — live KuCoin price, e.g. /price BTC or /price ETH-EUR\n"
         "/balance — your KuCoin balances (bot owner only)\n"
+        "/backtest [coin] [candle] — test the strategy on past prices\n"
         "/autotrade on|off|status — run the signal bot (owner only)\n"
         "/help — this message\n\n" + DISCLAIMER
     )
@@ -187,6 +188,34 @@ async def balance(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
+async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    symbol = config.TRADE_SYMBOL
+    kline_type = config.KLINE_TYPE
+    if context.args:
+        symbol = context.args[0].upper()
+        if "-" not in symbol:
+            symbol += "-USDT"
+    if len(context.args) > 1:
+        kline_type = context.args[1]
+
+    await update.effective_chat.send_action(ChatAction.TYPING)
+    try:
+        result = await backtest.run(symbol, kline_type)
+    except kucoin_client.NotFoundError:
+        await update.message.reply_text(
+            f"KuCoin has no candle data for “{symbol}”. Try /backtest BTC 1hour."
+        )
+        return
+    except kucoin_client.KucoinError:
+        await update.message.reply_text(
+            "KuCoin is not responding right now — please try again in a minute."
+        )
+        return
+
+    report = backtest.format_report(symbol, kline_type, result)
+    await update.message.reply_text(f"<pre>{html.escape(report)}</pre>", parse_mode=ParseMode.HTML)
+
+
 def _is_owner(update: Update) -> bool:
     user = update.effective_user
     return bool(config.TELEGRAM_OWNER_ID) and user is not None and (
@@ -272,6 +301,7 @@ def main() -> None:
     app.add_handler(CommandHandler("drug", drug))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("autotrade", autotrade))
 
     logger.info("Bot starting (long polling)…")
