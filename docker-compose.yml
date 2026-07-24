@@ -1,0 +1,39 @@
+# Two services from one image: the trading engine and the read-only
+# dashboard. Both auto-restart on crash or server reboot. Secrets come
+# from your .env file (never baked into the image).
+#
+#   docker compose up -d        # start both, detached
+#   docker compose logs -f engine
+#
+# The engine trades LIVE only if LIVE_TRADING=true in .env AND you have run
+# `python -m bot.golive` (its token file is persisted in ./data).
+
+services:
+  engine:
+    build: .
+    command: python -m bot.live_engine
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data          # persist SQLite state + go-live token
+    environment:
+      STATE_DB_PATH: /app/data/bot_state.sqlite3
+      GOLIVE_TOKEN_PATH: /app/data/.golive_confirmed
+    healthcheck:
+      test: ["CMD", "python", "-c", "import bot.config"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+
+  dashboard:
+    build: .
+    command: uvicorn bot.dashboard:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      STATE_DB_PATH: /app/data/bot_state.sqlite3
+      GOLIVE_TOKEN_PATH: /app/data/.golive_confirmed

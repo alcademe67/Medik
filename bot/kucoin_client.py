@@ -18,6 +18,7 @@ import logging
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -239,3 +240,84 @@ async def place_market_order(
 
     data = _data_or_raise(response) or {}
     return {"dryRun": False, "orderId": data.get("orderId"), "order": order}
+
+
+async def _signed_get(path: str, params: dict | None = None) -> Any:
+    """Signed GET. The query string is signed exactly as it is sent, so the
+    signature always matches the request (KuCoin rejects any mismatch).
+    """
+    query = "?" + urlencode(sorted(params.items())) if params else ""
+    headers = _signed_headers("GET", path + query)
+    try:
+        response = await _get_client().get(path + query, headers=headers)
+    except httpx.HTTPError as exc:
+        logger.warning("KuCoin request failed: %s", exc)
+        raise KucoinError("could not reach KuCoin") from exc
+    return _data_or_raise(response)
+
+
+async def get_server_time() -> int:
+    """KuCoin server time in ms — a lightweight connectivity + clock check."""
+    try:
+        response = await _get_client().get("/api/v1/timestamp")
+    except httpx.HTTPError as exc:
+        raise KucoinError("could not reach KuCoin") from exc
+    return int(_data_or_raise(response))
+
+
+async def get_symbol_info(symbol: str) -> dict[str, Any]:
+    """Trading rules for a symbol (min order sizes, increments, tradable)."""
+    try:
+        response = await _get_client().get("/api/v1/symbols")
+    except httpx.HTTPError as exc:
+        raise KucoinError("could not reach KuCoin") from exc
+    for m in _data_or_raise(response) or []:
+        if m.get("symbol") == symbol:
+            return {
+                "symbol": symbol,
+                "base_min_size": float(m.get("baseMinSize") or 0),
+                "quote_min_size": float(m.get("quoteMinSize") or 0),
+                "base_increment": float(m.get("baseIncrement") or 0),
+                "price_increment": float(m.get("priceIncrement") or 0),
+                "enable_trading": bool(m.get("enableTrading", False)),
+            }
+    raise NotFoundError(symbol)
+
+
+async def get_available_balance(currency: str, account_type: str = "trade") -> float:
+    """Available (not held) balance of one currency. Signed."""
+    data = await _signed_get("/api/v1/accounts", {"currency": currency, "type": account_type})
+    return sum(float(a.get("available") or 0) for a in (data or []))
+
+
+async def list_active_orders(symbol: str | None = None) -> list[dict]:
+    """Open (unfilled) orders, optionally for one symbol. Signed.
+
+    Used by the execution layer to refuse a duplicate order.
+    """
+    params = {"status": "active"}
+    if symbol:
+        params["symbol"] = symbol
+    data = await _signed_get("/api/v1/orders", params)
+    if isinstance(data, dict):  # KuCoin paginates this endpoint
+        return data.get("items", [])
+    return data or []
+
+
+async def fetch_candles(
+    symbol: str, kline_type: str = "5min", limit: int = 200
+) -> list[tuple[float, float, float]]:
+    """Recent candles as (high, low, close) tuples, oldest to newest.
+
+    Used for ATR-based stops. Public endpoint (no auth).
+    """
+    try:
+        response = await _get_client().get(
+            "/api/v1/market/candles", params={"symbol": symbol, "type": kline_type}
+        )
+    except httpx.HTTPError as exc:
+        raise KucoinError("could not reach KuCoin") from exc
+    # KuCoin rows (newest first): [time, open, close, high, low, volume, turnover]
+    rows = _data_or_raise(response) or []
+    out = [(float(r[3]), float(r[4]), float(r[2])) for r in reversed(rows)]
+    return out[-limit:]

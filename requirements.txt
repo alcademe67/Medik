@@ -7,3 +7,7 @@ python-dotenv>=1.0
 ccxt>=4.2
 pandas>=2.0
 numpy>=1.24
+
+# Live engine dashboard (bot/dashboard.py)
+fastapi>=0.110
+uvicorn>=0.29

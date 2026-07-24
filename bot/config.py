@@ -5,6 +5,7 @@ environment variables or a local .env file (see .env.example).
 """
 
 import os
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
@@ -56,3 +57,51 @@ SLOW_MA = int(os.getenv("SLOW_MA", "21"))
 # Hard cap: the loop refuses to place more than this many orders per day,
 # so a flapping signal or a bug can't drain the account.
 MAX_DAILY_ORDERS = int(os.getenv("MAX_DAILY_ORDERS", "10"))
+
+
+def _f(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _i(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+# --- LIVE trading safety gates ---
+# Live orders require ALL of these, checked at startup (see bot/preflight.py):
+#   1. LIVE_TRADING=true
+#   2. valid API keys (auth succeeds)
+#   3. the operator ran `python -m bot.golive` and confirmed the checklist
+# The go-live confirmation writes a token file; the live engine refuses to
+# start without it even if LIVE_TRADING=true. Two independent switches.
+GOLIVE_TOKEN_PATH = os.getenv("GOLIVE_TOKEN_PATH", ".golive_confirmed")
+STATE_DB_PATH = os.getenv("STATE_DB_PATH", "bot_state.sqlite3")
+
+# Quote currency of the account we size risk against (USDT for BTC-USDT).
+QUOTE_CURRENCY = os.getenv("QUOTE_CURRENCY", "USDT")
+
+
+@dataclass(frozen=True)
+class RiskParams:
+    """Every risk control in one place. All overridable via .env."""
+
+    max_risk_per_trade: float = _f("MAX_RISK_PER_TRADE", 0.01)   # 1% of equity
+    max_open_positions: int = _i("MAX_OPEN_POSITIONS", 3)
+    daily_loss_limit_pct: float = _f("DAILY_LOSS_LIMIT_PCT", 5.0)  # halt for the day
+    max_consecutive_losses: int = _i("MAX_CONSECUTIVE_LOSSES", 3)  # then pause
+    stop_atr_mult: float = _f("STOP_ATR_MULT", 2.0)               # stop = entry - k*ATR
+    take_profit_rr: float = _f("TAKE_PROFIT_RR", 2.0)             # target = RR * stop dist
+    # Absolute floor on order notional; the real minimum from the exchange
+    # is also enforced per-symbol in execution.py.
+    min_order_usdt: float = _f("MIN_ORDER_USDT", 1.0)
+    # Minimum seconds between order submissions (rate-limit courtesy).
+    order_min_interval_s: float = _f("ORDER_MIN_INTERVAL_S", 1.0)
+
+
+RISK = RiskParams()
