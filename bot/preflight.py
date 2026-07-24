@@ -13,6 +13,7 @@ BOTH LIVE_TRADING=true AND the go-live token written by `bot.golive`.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 
@@ -87,3 +88,23 @@ def live_allowed() -> tuple[bool, str]:
     if not golive_confirmed():
         return False, "go-live not confirmed — run `python -m bot.golive`"
     return True, "live trading armed"
+
+
+async def _main() -> None:
+    """`python -m bot.preflight` — run the read-only health checks and show
+    the current live-trading gate status. Places no orders; arms nothing."""
+    print("\n=== KuCoin health check (read-only) ===\n")
+    checks = await run_health_checks()
+    for c in checks:
+        mark = "PASS" if c.passed else "FAIL"
+        print(f"  [{mark}] {c.name} — {c.detail}")
+
+    allowed, reason = live_allowed()
+    print(f"\nHealth checks : {'ALL PASS ✅' if all_passed(checks) else 'SOME FAILED ❌'}")
+    print(f"Live gate     : {'OPEN' if allowed else 'CLOSED'} — {reason}")
+    print("\nThis only checked your setup. It placed no orders and armed nothing.")
+    await kucoin_client.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())
