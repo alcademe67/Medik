@@ -18,12 +18,10 @@ import os
 import time
 
 from bot import config, execution, kucoin_client, notify, preflight, risk, state
+from bot.logging_setup import setup_logging
 from bot.strategy import Signal, crossover_signal
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+setup_logging()
 logger = logging.getLogger("live_engine")
 
 PAPER_EQUITY = float(os.getenv("PAPER_EQUITY", "1000"))

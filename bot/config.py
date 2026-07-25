@@ -93,6 +93,12 @@ STATE_DB_PATH = os.getenv("STATE_DB_PATH", "bot_state.sqlite3")
 # Quote currency of the account we size risk against (USDT for BTC-USDT).
 QUOTE_CURRENCY = os.getenv("QUOTE_CURRENCY", "USDT")
 
+# --- Logging ---
+# Rotating daily log files land here; the newest is bot.log, older ones are
+# bot.log.YYYY-MM-DD. Kept for LOG_BACKUP_DAYS days.
+LOG_DIR = os.getenv("LOG_DIR", "logs")
+LOG_BACKUP_DAYS = _i("LOG_BACKUP_DAYS", 30)
+
 
 @dataclass(frozen=True)
 class RiskParams:

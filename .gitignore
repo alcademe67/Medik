@@ -9,3 +9,8 @@ venv/
 *.egg-info/
 .mypy_cache/
 .pytest_cache/
+
+# Runtime artifacts (never commit these)
+logs/
+*.sqlite3
+.golive_confirmed

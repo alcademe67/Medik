@@ -11,14 +11,12 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from bot import api_client, backtest, config, kucoin_client
+from bot.logging_setup import setup_logging
 from bot.trader import Trader
 
 _trader: Trader | None = None
 
-logging.basicConfig(
-    format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 # Telegram caps messages at 4096 chars and label sections can run for pages.
