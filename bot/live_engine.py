@@ -159,7 +159,7 @@ class Engine:
         price = closes[-1]
         atr = _atr(candles)
         signal = crossover_signal(closes, config.FAST_MA, config.SLOW_MA)
-        await state.ensure_day(await self._equity())
+        state.ensure_day(await self._equity())
         await self._maybe_daily_summary()
         await self._manage_open(price, atr, exit_signal=(signal == Signal.SELL))
         if signal == Signal.BUY:
