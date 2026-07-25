@@ -61,6 +61,34 @@ def stop_and_target(
     return stop, target
 
 
+def update_stop(
+    *,
+    entry_price: float,
+    current_stop: float,
+    high_water: float,
+    price: float,
+    atr: float,
+    params: RiskParams = RISK,
+) -> tuple[float, float]:
+    """Return (new_stop, new_high_water) after applying breakeven + ATR trailing.
+
+    Invariant: the stop only ever moves UP (toward locking in profit), never
+    down — so a pullback can't loosen your protection. Both features are off
+    when their config value is 0.
+    """
+    high_water = max(high_water, price)
+    new_stop = current_stop
+    # Breakeven: once price is up breakeven_trigger_pct from entry, protect entry.
+    if params.breakeven_trigger_pct > 0 and price >= entry_price * (
+        1 + params.breakeven_trigger_pct / 100
+    ):
+        new_stop = max(new_stop, entry_price)
+    # ATR trailing: trail the stop a fixed ATR distance below the high-water mark.
+    if params.trailing_atr_mult > 0 and atr > 0:
+        new_stop = max(new_stop, high_water - params.trailing_atr_mult * atr)
+    return new_stop, high_water
+
+
 def position_size(
     *,
     equity: float,

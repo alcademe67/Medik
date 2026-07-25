@@ -32,6 +32,7 @@ class Position:
     target: float
     opened_at: float
     client_oid: str
+    high_water: float = 0.0   # highest price seen since entry (for trailing stops)
     id: int | None = None
 
 
@@ -48,7 +49,8 @@ def init_db(path: str | None = None) -> None:
             CREATE TABLE IF NOT EXISTS positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT, side TEXT, size REAL, entry_price REAL,
-                stop REAL, target REAL, opened_at REAL, client_oid TEXT UNIQUE
+                stop REAL, target REAL, opened_at REAL, client_oid TEXT UNIQUE,
+                high_water REAL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +64,11 @@ def init_db(path: str | None = None) -> None:
             );
             """
         )
+        # Migration for DBs created before high_water existed (harmless if present).
+        try:
+            c.execute("ALTER TABLE positions ADD COLUMN high_water REAL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 def _today() -> str:
@@ -82,8 +89,9 @@ def add_position(p: Position, path: str | None = None) -> int:
     with _connect(path) as c:
         cur = c.execute(
             "INSERT INTO positions (symbol, side, size, entry_price, stop, target, "
-            "opened_at, client_oid) VALUES (?,?,?,?,?,?,?,?)",
-            (p.symbol, p.side, p.size, p.entry_price, p.stop, p.target, p.opened_at, p.client_oid),
+            "opened_at, client_oid, high_water) VALUES (?,?,?,?,?,?,?,?,?)",
+            (p.symbol, p.side, p.size, p.entry_price, p.stop, p.target, p.opened_at,
+             p.client_oid, p.high_water or p.entry_price),
         )
         return int(cur.lastrowid)
 
@@ -96,9 +104,19 @@ def open_positions(path: str | None = None) -> list[Position]:
             id=r["id"], symbol=r["symbol"], side=r["side"], size=r["size"],
             entry_price=r["entry_price"], stop=r["stop"], target=r["target"],
             opened_at=r["opened_at"], client_oid=r["client_oid"],
+            high_water=r["high_water"],
         )
         for r in rows
     ]
+
+
+def update_stop(position_id: int, new_stop: float, high_water: float, path: str | None = None) -> None:
+    """Persist a moved stop and high-water mark (trailing / breakeven)."""
+    with _connect(path) as c:
+        c.execute(
+            "UPDATE positions SET stop=?, high_water=? WHERE id=?",
+            (new_stop, high_water, position_id),
+        )
 
 
 def count_open(path: str | None = None) -> int:
@@ -140,6 +158,13 @@ def close_position(position_id: int, exit_price: float, reason: str, path: str |
 def today_realized_pnl(path: str | None = None) -> float:
     with _connect(path) as c:
         r = c.execute("SELECT realized_pnl FROM daily WHERE day=?", (_today(),)).fetchone()
+    return float(r["realized_pnl"]) if r else 0.0
+
+
+def realized_pnl_for_day(day: str, path: str | None = None) -> float:
+    """Realized P/L for a specific UTC day (YYYY-MM-DD) — for the daily summary."""
+    with _connect(path) as c:
+        r = c.execute("SELECT realized_pnl FROM daily WHERE day=?", (day,)).fetchone()
     return float(r["realized_pnl"]) if r else 0.0
 
 

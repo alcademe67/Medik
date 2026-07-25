@@ -90,6 +90,10 @@ def _i(name: str, default: int) -> int:
 GOLIVE_TOKEN_PATH = os.getenv("GOLIVE_TOKEN_PATH", ".golive_confirmed")
 STATE_DB_PATH = os.getenv("STATE_DB_PATH", "bot_state.sqlite3")
 
+# Emergency brake: create this file (default "STOP") to halt trading and
+# shut the engine down gracefully — no terminal access needed.
+EMERGENCY_STOP_PATH = os.getenv("EMERGENCY_STOP_PATH", "STOP")
+
 # Quote currency of the account we size risk against (USDT for BTC-USDT).
 QUOTE_CURRENCY = os.getenv("QUOTE_CURRENCY", "USDT")
 
@@ -115,6 +119,9 @@ class RiskParams:
     min_order_usdt: float = _f("MIN_ORDER_USDT", 1.0)
     # Minimum seconds between order submissions (rate-limit courtesy).
     order_min_interval_s: float = _f("ORDER_MIN_INTERVAL_S", 1.0)
+    # Stop management (0 disables each). Stops only ever move up.
+    breakeven_trigger_pct: float = _f("BREAKEVEN_TRIGGER_PCT", 0.0)  # +X% -> stop to entry
+    trailing_atr_mult: float = _f("TRAILING_ATR_MULT", 0.0)         # trail this*ATR below high
 
 
 RISK = RiskParams()

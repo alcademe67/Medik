@@ -98,7 +98,7 @@ async def open_long(
     pos = state.Position(
         symbol=symbol, side="buy", size=size, entry_price=ref_price,
         stop=stop, target=target, opened_at=time.time(),
-        client_oid=result["order"]["clientOid"],
+        client_oid=result["order"]["clientOid"], high_water=ref_price,
     )
     pos_id = state.add_position(pos)
     logger.info(

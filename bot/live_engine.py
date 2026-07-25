@@ -49,6 +49,7 @@ class Engine:
         self.symbol = config.TRADE_SYMBOL
         self.live = False
         self._stop = asyncio.Event()
+        self._summary_day: str | None = None  # for the daily-summary rollover
 
     async def _equity(self) -> float:
         """Account equity used for position sizing (quote currency)."""
@@ -60,10 +61,25 @@ class Engine:
             return PAPER_EQUITY  # let paper mode work on an empty account
         return bal
 
-    async def _manage_open(self, price: float, exit_signal: bool) -> None:
+    async def _manage_open(self, price: float, atr: float, exit_signal: bool) -> None:
         for pos in state.open_positions():
             if pos.symbol != self.symbol:
                 continue
+
+            # Trail / breakeven the stop first (it can only move up).
+            new_stop, high_water = risk.update_stop(
+                entry_price=pos.entry_price, current_stop=pos.stop,
+                high_water=pos.high_water, price=price, atr=atr,
+            )
+            if new_stop > pos.stop or high_water > pos.high_water:
+                state.update_stop(pos.id, new_stop, high_water)
+                if new_stop > pos.stop:
+                    logger.info("stop moved up on %s: %.6f -> %.6f", pos.symbol, pos.stop, new_stop)
+                    await notify.send(
+                        f"🔒 Stop raised on {pos.symbol}: {pos.stop:.6f} → {new_stop:.6f}"
+                    )
+                pos.stop = new_stop  # use the tightened stop for the exit check below
+
             reason = None
             if price <= pos.stop:
                 reason = "stop"
@@ -111,17 +127,43 @@ class Engine:
             f"(stop {stop:.6f}, target {target:.6f})"
         )
 
+    async def _announce_emergency(self) -> None:
+        msg = f"🚨 Emergency stop file '{config.EMERGENCY_STOP_PATH}' detected — halting."
+        logger.critical(msg)
+        await notify.send(msg)
+
+    async def _maybe_daily_summary(self) -> None:
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        if self._summary_day is None:
+            self._summary_day = today
+        elif today != self._summary_day:
+            pnl = state.realized_pnl_for_day(self._summary_day)
+            st = state.stats()
+            await notify.send(
+                f"📊 Daily summary {self._summary_day}: realized P/L "
+                f"{pnl:+.4f} {config.QUOTE_CURRENCY}. All-time: {st['total_trades']} "
+                f"trades, {st['win_rate']:.1f}% win, total {st['total_pnl']:+.4f}."
+            )
+            self._summary_day = today
+
     async def _tick(self) -> None:
+        # Emergency brake: a STOP file halts trading immediately.
+        if os.path.exists(config.EMERGENCY_STOP_PATH):
+            await self._announce_emergency()
+            self._stop.set()
+            return
         candles = await kucoin_client.fetch_candles(self.symbol, config.KLINE_TYPE, limit=200)
         closes = [c[2] for c in candles]
         if len(closes) < config.SLOW_MA + 1:
             return
         price = closes[-1]
+        atr = _atr(candles)
         signal = crossover_signal(closes, config.FAST_MA, config.SLOW_MA)
         await state.ensure_day(await self._equity())
-        await self._manage_open(price, exit_signal=(signal == Signal.SELL))
+        await self._maybe_daily_summary()
+        await self._manage_open(price, atr, exit_signal=(signal == Signal.SELL))
         if signal == Signal.BUY:
-            await self._maybe_open(price, _atr(candles))
+            await self._maybe_open(price, atr)
 
     async def run(self) -> None:
         state.init_db()

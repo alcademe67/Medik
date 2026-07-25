@@ -41,6 +41,18 @@ order, and a minimum interval since the last order has passed.
 | Pause after N losses | 3 | `MAX_CONSECUTIVE_LOSSES` |
 | Stop-loss | 2×ATR | `STOP_ATR_MULT` |
 | Take-profit | 2:1 | `TAKE_PROFIT_RR` |
+| Breakeven stop | off | `BREAKEVEN_TRIGGER_PCT` (>0 moves stop to entry once up X%) |
+| ATR trailing stop | off | `TRAILING_ATR_MULT` (>0 trails this×ATR below the high) |
+
+Stops **only ever move up** (toward locking in profit), never down. Every
+stop adjustment is logged and sent to your notification channel.
+
+**Emergency stop:** create a file named `STOP` in the working directory
+(default; set `EMERGENCY_STOP_PATH`) and the engine halts trading and shuts
+down gracefully on its next tick — no terminal access needed
+(`docker exec <container> touch STOP` works too). Delete the file before
+restarting. A **daily summary** (realized P/L + all-time stats) is sent to
+your notification channel at each UTC-day rollover.
 
 ## Recommended path to live (do not skip)
 
