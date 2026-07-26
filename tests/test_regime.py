@@ -52,3 +52,18 @@ def test_regime_routes_bull_to_trend_following():
     bull = out["regime"] == "bull"
     # On every bull bar, the framework's entry must equal the trend strategy's.
     assert (out.loc[bull, "entry"] == trend.loc[bull, "entry"]).all()
+
+
+def test_regime_exit_is_regime_matched_not_a_union():
+    # A trend (bull) position must exit on the TREND exit, not the constantly-on
+    # mean-reversion exit; a bear bar must always exit to cash.
+    close = 100 + np.linspace(0, 60, 400) + 3 * np.sin(np.arange(400) / 8)
+    df = _df(close)
+    p = StrategyParams()
+    out = _regime_signals(df, p)
+    trend = _trend_signals(df, p)
+    bull = out["regime"] == "bull"
+    assert (out.loc[bull, "exit"] == trend.loc[bull, "exit"]).all()
+    bear = out["regime"] == "bear"
+    if bear.any():
+        assert out.loc[bear, "exit"].all()   # bear -> go to cash

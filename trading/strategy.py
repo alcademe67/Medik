@@ -109,9 +109,19 @@ def _regime_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
     entry = entry.mask(reg == "high_vol", brk["entry"])
     # "bear" -> stay in cash, no entries.
 
+    # The EXIT must match the regime too. A union of all exits would let the
+    # mean-reversion exit (close >= mid-band, true on most up-trend bars) close
+    # a trend entry almost immediately — trend-following could never ride a
+    # move. So each regime exits on its OWN rule; a bear bar exits to cash.
+    exit_ = pd.Series(False, index=df.index)
+    exit_ = exit_.mask(reg == "bull", trend["exit"])
+    exit_ = exit_.mask(reg == "sideways", mrev["exit"])
+    exit_ = exit_.mask(reg == "high_vol", brk["exit"])
+    exit_ = exit_.mask(reg == "bear", True)
+
     out = brk.copy()  # already carries the indicator columns
     out["entry"] = entry.fillna(False).astype(bool)
-    out["exit"] = (trend["exit"] | mrev["exit"] | brk["exit"]).fillna(False)
+    out["exit"] = exit_.fillna(False).astype(bool)
     out["regime"] = reg
     return out
 
