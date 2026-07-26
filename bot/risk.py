@@ -98,6 +98,82 @@ def update_stop(
     return new_stop, high_water
 
 
+def size_breakdown(
+    *,
+    equity: float,
+    entry_price: float,
+    stop_price: float,
+    available_quote: float,
+    params: RiskParams = RISK,
+) -> dict:
+    """Compute the position size AND every intermediate term + a plain-English
+    reason, so a caller can log exactly why the size is what it is (including
+    why it is zero). `position_size` is the thin wrapper that returns just the
+    final size; this is the same math with the work shown.
+
+    Terms:
+      * risk_size      — units so the loss to the stop == max_risk_per_trade
+      * cap_size       — units allowed by the max_position_pct notional ceiling
+      * affordable     — units the available quote balance can actually buy
+      * size           — max(0, min(risk_size, cap_size, affordable))
+    """
+    risk_per_unit = entry_price - stop_price
+    info: dict = {
+        "equity": equity,
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "risk_per_unit": risk_per_unit,
+        "available_quote": available_quote,
+        "risk_budget": 0.0,
+        "risk_size": 0.0,
+        "cap_size": float("inf"),
+        "affordable": 0.0,
+        "size": 0.0,
+        "reason": "",
+    }
+    if entry_price <= 0:
+        info["reason"] = f"entry_price {entry_price} <= 0 (no valid price)"
+        return info
+    if risk_per_unit <= 0:
+        info["reason"] = (
+            f"risk_per_unit {risk_per_unit} <= 0 — stop {stop_price} is not below "
+            f"entry {entry_price} (ATR likely 0)"
+        )
+        return info
+    if equity <= 0:
+        info["reason"] = f"equity {equity} <= 0 (no account value to size against)"
+        return info
+
+    risk_budget = equity * params.max_risk_per_trade
+    risk_size = risk_budget / risk_per_unit
+    info["risk_budget"] = risk_budget
+    info["risk_size"] = risk_size
+    size = risk_size
+    binding = "risk-per-trade budget"
+
+    if params.max_position_pct > 0:
+        cap_size = (equity * params.max_position_pct / 100.0) / entry_price
+        info["cap_size"] = cap_size
+        if cap_size < size:
+            size, binding = cap_size, f"max_position_pct cap ({params.max_position_pct}%)"
+
+    affordable = available_quote / entry_price
+    info["affordable"] = affordable
+    if affordable < size:
+        size, binding = affordable, "available cash"
+
+    size = max(0.0, size)
+    info["size"] = size
+    if size <= 0:
+        info["reason"] = (
+            f"available_quote {available_quote} buys 0 units at {entry_price}"
+            if available_quote <= 0 else "computed size collapsed to 0"
+        )
+    else:
+        info["reason"] = f"binding constraint = {binding}"
+    return info
+
+
 def position_size(
     *,
     equity: float,
@@ -106,22 +182,10 @@ def position_size(
     available_quote: float,
     params: RiskParams = RISK,
 ) -> float:
-    """Base-currency size risking at most `max_risk_per_trade` of equity.
-
-    Sized so the loss to the stop equals the risk budget, then capped by
-    the cash actually available. Returns 0 if inputs are unusable.
-    """
-    risk_per_unit = entry_price - stop_price
-    if entry_price <= 0 or risk_per_unit <= 0 or equity <= 0:
-        return 0.0
-    risk_budget = equity * params.max_risk_per_trade
-    size = risk_budget / risk_per_unit
-    # Cap the position's NOTIONAL to a small % of equity, independent of the
-    # stop distance. A tight stop makes the risk sizing above want a huge
-    # position; this ceiling keeps any one trade small relative to the account.
-    if params.max_position_pct > 0:
-        max_notional = equity * params.max_position_pct / 100.0
-        size = min(size, max_notional / entry_price)
-    # Never spend more cash than we have.
-    max_affordable = available_quote / entry_price
-    return max(0.0, min(size, max_affordable))
+    """Base-currency size risking at most `max_risk_per_trade` of equity, then
+    capped by the notional ceiling and the cash on hand. 0 if inputs are
+    unusable. See `size_breakdown` for the itemised math and the reason."""
+    return size_breakdown(
+        equity=equity, entry_price=entry_price, stop_price=stop_price,
+        available_quote=available_quote, params=params,
+    )["size"]

@@ -31,6 +31,24 @@ def test_position_size_zero_on_bad_inputs():
     assert risk.position_size(equity=100, entry_price=100, stop_price=100, available_quote=100) == 0
 
 
+def test_size_breakdown_explains_why_size_is_zero_or_not():
+    # No cash on hand -> affordable 0 -> size 0, reason names the cash constraint.
+    bd = risk.size_breakdown(equity=1000, entry_price=100, stop_price=90, available_quote=0)
+    assert bd["size"] == 0 and "buys 0 units" in bd["reason"]
+
+    # Stop not below entry -> risk_per_unit <= 0 -> size 0 with a clear reason.
+    bd2 = risk.size_breakdown(equity=1000, entry_price=100, stop_price=100, available_quote=1e9)
+    assert bd2["size"] == 0 and "risk_per_unit" in bd2["reason"]
+
+    # Healthy inputs -> positive size and a named binding constraint.
+    bd3 = risk.size_breakdown(equity=10_000, entry_price=100, stop_price=90, available_quote=1e9)
+    assert bd3["size"] > 0 and "binding constraint" in bd3["reason"]
+
+    # Tiny balance is the binding constraint, and it's named as such.
+    bd4 = risk.size_breakdown(equity=10_000, entry_price=100, stop_price=90, available_quote=500)
+    assert bd4["size"] == pytest.approx(5.0) and "available cash" in bd4["reason"]
+
+
 def test_position_size_capped_by_max_position_pct():
     # Tight 1% stop: risk sizing alone wants 100 units (100% of equity).
     # The 25% notional cap must clamp it to 25 units (25% of 10000 at price 100).

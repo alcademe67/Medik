@@ -97,34 +97,81 @@ class Engine:
                 )
 
     async def _maybe_open(self, symbol: str, price: float, atr: float) -> None:
-        if atr <= 0 or state.has_open_symbol(symbol):
+        # [Q8] guard exits — logged so a skipped entry is never silent.
+        if atr <= 0:
+            logger.warning(
+                "PIPE %s: NO ENTRY — ATR=%.8f <= 0, can't set a stop (need more/none-flat candles)",
+                symbol, atr,
+            )
             return
-        # Risk caps are GLOBAL — counted across every coin in the watchlist —
-        # so more symbols never means more concurrent risk than configured.
-        decision = risk.check_can_trade(
-            open_positions=state.count_open(),
-            realized_pnl_today=state.today_realized_pnl(),
-            start_equity_today=state.today_start_equity(),
-            consecutive_losses=state.consecutive_losses(),
-            orders_today=state.orders_today(),
-        )
-        if not decision.allowed:
-            logger.info("entry skipped (%s): %s", symbol, decision.reason)
+        if state.has_open_symbol(symbol):
+            logger.info(
+                "PIPE %s: NO ENTRY — already holding an open position in %s "
+                "(one position per coin; it won't re-buy until this one closes)",
+                symbol, symbol,
+            )
             return
 
+        # [Q2] risk gate. Caps are GLOBAL — counted across every coin in the
+        # watchlist — so more symbols never means more concurrent risk.
+        open_n = state.count_open()
+        pnl_today = state.today_realized_pnl()
+        start_eq = state.today_start_equity()
+        streak = state.consecutive_losses()
+        orders_n = state.orders_today()
+        decision = risk.check_can_trade(
+            open_positions=open_n,
+            realized_pnl_today=pnl_today,
+            start_equity_today=start_eq,
+            consecutive_losses=streak,
+            orders_today=orders_n,
+        )
+        logger.info(
+            "PIPE %s: check_can_trade allowed=%s reason=%s "
+            "[open=%d/%d pnl_today=%.4f start_eq=%s streak=%d/%d orders_today=%d/%d]",
+            symbol, decision.allowed, decision.reason,
+            open_n, config.RISK.max_open_positions, pnl_today,
+            f"{start_eq:.4f}" if start_eq is not None else "None",
+            streak, config.RISK.max_consecutive_losses,
+            orders_n, config.RISK.max_daily_orders,
+        )
+        if not decision.allowed:
+            return
+
+        # [Q3] available balance used for sizing + [Q4]/[Q5] the size math.
         equity = await self._equity()
         stop, target = risk.stop_and_target(price, atr)
-        size = risk.position_size(
+        bd = risk.size_breakdown(
             equity=equity, entry_price=price, stop_price=stop, available_quote=equity
         )
+        logger.info(
+            "PIPE %s: sizing equity=%.8f entry=%.8f stop=%.8f risk/unit=%.8f "
+            "risk_budget=%.8f risk_size=%.8f cap_size=%.8f affordable=%.8f -> size=%.8f (%s)",
+            symbol, equity, price, stop, bd["risk_per_unit"], bd["risk_budget"],
+            bd["risk_size"], bd["cap_size"], bd["affordable"], bd["size"], bd["reason"],
+        )
+        size = bd["size"]
         if size <= 0:
+            logger.warning("PIPE %s: NO ORDER — position size is 0. Why: %s", symbol, bd["reason"])
             return
+
+        # [Q6] execution.open_long is called. [Q7]/[Q9] handled inside it and
+        # in kucoin_client.place_market_order (request + full raw response).
+        logger.info(
+            "PIPE %s: submitting -> execution.open_long(size=%.8f entry=%.8f stop=%.8f "
+            "target=%.8f live=%s)", symbol, size, price, stop, target, self.live,
+        )
         try:
             _id, res = await execution.open_long(symbol, size, price, stop, target, live=self.live)
         except execution.ValidationError as exc:
-            logger.info("entry rejected by validation (%s): %s", symbol, exc)
+            logger.warning("PIPE %s: NO ORDER — pre-trade validation rejected it: %s", symbol, exc)
             return
-        tag = "" if res.get("dryRun") is False else "PAPER "
+        real = res.get("dryRun") is False
+        logger.info(
+            "PIPE %s: open_long returned real_order=%s orderId=%s dryRun=%s",
+            symbol, real, res.get("orderId"), res.get("dryRun"),
+        )
+        tag = "" if real else "PAPER "
         await notify.send(
             f"🟢 {tag}BUY {symbol} @ {price:.6f} size {size} "
             f"(stop {stop:.6f}, target {target:.6f})"
@@ -167,17 +214,40 @@ class Engine:
                 logger.warning("tick error on %s: %s", symbol, exc)
 
     async def _tick_symbol(self, symbol: str) -> None:
-        """Fetch data for one coin, then manage its position and maybe enter."""
+        """Fetch data for one coin, then manage its position and maybe enter.
+
+        Every branch is logged (prefix ``PIPE``) so the trade pipeline can be
+        traced end to end: signal -> risk -> sizing -> order submission.
+        """
         candles = await kucoin_client.fetch_candles(symbol, config.KLINE_TYPE, limit=200)
         closes = [c[2] for c in candles]
+        # [Q8] first possible exit: not enough history to compute the slow MA.
         if len(closes) < config.SLOW_MA + 1:
+            logger.info(
+                "PIPE %s: only %d candles (<%d needed for MA%d) — HOLD, no signal yet",
+                symbol, len(closes), config.SLOW_MA + 1, config.SLOW_MA,
+            )
             return
         price = closes[-1]
         atr = _atr(candles)
+        # [Q1] is a BUY signal generated? Log the signal every tick for every coin.
         signal = crossover_signal(closes, config.FAST_MA, config.SLOW_MA)
+        logger.info(
+            "PIPE %s: signal=%s price=%.8f atr=%.8f candles=%d MA(fast=%d/slow=%d)",
+            symbol, signal.value, price, atr, len(closes), config.FAST_MA, config.SLOW_MA,
+        )
         await self._manage_open(symbol, price, atr, exit_signal=(signal == Signal.SELL))
         if signal == Signal.BUY:
             await self._maybe_open(symbol, price, atr)
+        else:
+            # [Q8] most common real cause: the MA-crossover only returns BUY on
+            # the exact candle where fast crosses above slow. Any other tick =
+            # HOLD/SELL and the entry path is never evaluated -> no order.
+            logger.info(
+                "PIPE %s: no entry attempted — signal is %s, not BUY "
+                "(a BUY fires only on the candle fast MA crosses above slow MA)",
+                symbol, signal.value,
+            )
 
     async def run(self) -> None:
         state.init_db()

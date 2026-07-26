@@ -85,16 +85,25 @@ async def validate_buy(symbol: str, size: float, ref_price: float, *, live: bool
     on hand, resting exchange orders) only run when `live` — in paper mode
     there is no real money or real order to check against.
     """
+    size_in = size
     info = await kucoin_client.get_symbol_info(symbol)
     if not info["enable_trading"]:
         raise ValidationError(f"{symbol} is not tradable on KuCoin right now")
 
     size = _round_down(size, info["base_increment"])
+    notional = size * ref_price
+    floor = max(config.RISK.min_order_usdt, info["quote_min_size"])
+    # Log the exchange constraints against the requested size so a rejection on
+    # a small account (size/notional below the minimum) is obvious in the log.
+    logger.info(
+        "validate_buy %s: size_in=%.8f rounded=%.8f base_min=%.8f incr=%.8f "
+        "notional=%.6f floor=%.6f live=%s",
+        symbol, size_in, size, info["base_min_size"], info["base_increment"],
+        notional, floor, live,
+    )
     if size <= 0 or size < info["base_min_size"]:
         raise ValidationError(f"size {size} below exchange minimum {info['base_min_size']}")
 
-    notional = size * ref_price
-    floor = max(config.RISK.min_order_usdt, info["quote_min_size"])
     if notional < floor:
         raise ValidationError(f"order value {notional:.4f} below minimum {floor}")
 

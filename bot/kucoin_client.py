@@ -223,7 +223,7 @@ async def place_market_order(
         order["size"] = str(size)
 
     if not config.LIVE_TRADING:
-        logger.info("DRY-RUN: would place order %s", order)
+        logger.info("DRY-RUN: would place order %s (LIVE_TRADING is false)", order)
         return {"dryRun": True, "order": order}
 
     path = "/api/v1/orders"
@@ -232,13 +232,20 @@ async def place_market_order(
     body = json.dumps(order, separators=(",", ":"))
     headers = _signed_headers("POST", path, body)
     headers["Content-Type"] = "application/json"
+    # [Q7] log the exact outgoing REAL order (no secrets — the signed auth
+    # headers are never logged, only the order body).
+    logger.info("LIVE ORDER submit -> POST %s body=%s", path, body)
     try:
         response = await _get_client().post(path, headers=headers, content=body)
     except httpx.HTTPError as exc:
-        logger.warning("KuCoin order failed: %s", exc)
+        logger.warning("LIVE ORDER network error placing %s: %s", order, exc)
         raise KucoinError("could not reach KuCoin to place order") from exc
 
+    # [Q9] log the COMPLETE raw exchange response (status + full body) BEFORE
+    # unwrapping, so a rejection's code/msg is captured verbatim in the log.
+    logger.info("LIVE ORDER response <- HTTP %s body=%s", response.status_code, response.text)
     data = _data_or_raise(response) or {}
+    logger.info("LIVE ORDER accepted <- orderId=%s", data.get("orderId"))
     return {"dryRun": False, "orderId": data.get("orderId"), "order": order}
 
 
