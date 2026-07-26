@@ -212,24 +212,82 @@ def test_get_order_fills_aggregates(monkeypatch):
     assert f["fee_currency"] == "USDT" and f["fills"] == 2
 
 
-def test_log_fills_skips_paper_orders(monkeypatch):
+def test_settle_fees_paper_estimates_without_network(monkeypatch):
     called = False
     async def spy(_oid):
         nonlocal called
         called = True
         return {}
     monkeypatch.setattr(kucoin_client, "get_order_fills", spy)
-    # A dry-run (paper) result never executed on the exchange -> no fills lookup.
-    asyncio.run(execution._log_fills({"dryRun": True, "order": {}}, "BTC-USDT", "BUY"))
+    monkeypatch.setattr(config, "FEE_RATE", 0.001)
+    # Paper: fee is ESTIMATED as notional * FEE_RATE; the fills endpoint is untouched.
+    fee = asyncio.run(execution._settle_fees({"dryRun": True, "order": {}}, "BTC-USDT", "BUY", 250.0))
     assert called is False
+    assert fee == pytest.approx(0.25)
 
 
-def test_log_fills_is_best_effort(monkeypatch):
+def test_settle_fees_live_best_effort_zero_on_error(monkeypatch):
     async def boom(_oid):
         raise kucoin_client.KucoinError("fills endpoint down")
     monkeypatch.setattr(kucoin_client, "get_order_fills", boom)
-    # The order already executed; a fills-lookup failure must NOT raise.
-    asyncio.run(execution._log_fills({"dryRun": False, "orderId": "x"}, "BTC-USDT", "SELL"))
+    # The order already executed; a fills-lookup failure must NOT raise -> fee 0.
+    fee = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "x"}, "BTC-USDT", "SELL", 100.0))
+    assert fee == 0.0
+
+
+def test_settle_fees_converts_base_currency_fee_to_quote(monkeypatch):
+    async def fills(_oid):
+        return {"filled_size": 2.0, "avg_price": 100.0, "fee": 0.002,
+                "fee_currency": "BTC", "fills": 1}
+    monkeypatch.setattr(kucoin_client, "get_order_fills", fills)
+    # A BUY fee charged in BTC is valued in USDT at the fill price: 0.002 * 100 = 0.20.
+    fee = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "o"}, "BTC-USDT", "BUY", 200.0))
+    assert fee == pytest.approx(0.20)
+
+
+# ------------------------------------------------------ net P/L accounting
+def test_position_entry_fee_roundtrips(tmp_path):
+    db = str(tmp_path / "s.sqlite3")
+    state.init_db(db)
+    state.add_position(
+        state.Position("BTC-USDT", "buy", 1, 100, 96, 108, 0.0, "o", entry_fee=0.33), db
+    )
+    assert state.open_positions(db)[0].entry_fee == pytest.approx(0.33)
+
+
+def test_close_position_records_net_pnl_after_fees(tmp_path):
+    db = str(tmp_path / "s.sqlite3")
+    state.init_db(db)
+    state.ensure_day(1000, db)
+    pid = state.add_position(
+        state.Position("BTC-USDT", "buy", 2.0, 100, 96, 108, 0.0, "oid", entry_fee=0.20), db
+    )
+    # gross = (108-100)*2 = 16 ; fees = 0.20 + 0.27 = 0.47 ; net = 15.53
+    net = state.close_position(pid, 108, "target", db, entry_fee=0.20, exit_fee=0.27)
+    assert net == pytest.approx(15.53)
+    assert state.today_realized_pnl(db) == pytest.approx(15.53)   # daily limit uses NET
+    tr = state.recent_trades(1, db)[0]
+    assert tr["pnl"] == pytest.approx(15.53)       # history stores NET
+    assert tr["gross_pnl"] == pytest.approx(16.0)  # gross kept
+    assert tr["fees"] == pytest.approx(0.47)       # fees kept
+    st = state.stats(db)
+    assert st["total_pnl"] == pytest.approx(15.53)
+    assert st["gross_pnl"] == pytest.approx(16.0)
+    assert st["total_fees"] == pytest.approx(0.47)
+
+
+def test_fees_flip_a_gross_win_to_a_net_loss(tmp_path):
+    db = str(tmp_path / "s.sqlite3")
+    state.init_db(db)
+    state.ensure_day(1000, db)
+    # gross +0.2, fees 0.30 -> net -0.10: must count as a LOSS for streak & win-rate.
+    pid = state.add_position(
+        state.Position("BTC-USDT", "buy", 1.0, 100, 96, 101, 0.0, "o", entry_fee=0.10), db
+    )
+    net = state.close_position(pid, 100.2, "signal", db, entry_fee=0.10, exit_fee=0.20)
+    assert net == pytest.approx(-0.10)
+    assert state.consecutive_losses(db) == 1        # NET loss increments the streak
+    assert state.stats(db)["win_rate"] == pytest.approx(0.0)   # gross-win but NET loss
 
 
 # ------------------------------------------------------------- the live gate

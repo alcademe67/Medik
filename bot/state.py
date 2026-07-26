@@ -34,6 +34,7 @@ class Position:
     opened_at: float
     client_oid: str
     high_water: float = 0.0   # highest price seen since entry (for trailing stops)
+    entry_fee: float = 0.0    # fee paid to OPEN (quote ccy) — used for net P/L at close
     id: int | None = None
 
 
@@ -51,13 +52,14 @@ def init_db(path: str | None = None) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT, side TEXT, size REAL, entry_price REAL,
                 stop REAL, target REAL, opened_at REAL, client_oid TEXT UNIQUE,
-                high_water REAL DEFAULT 0
+                high_water REAL DEFAULT 0, entry_fee REAL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT, side TEXT, size REAL,
                 entry_price REAL, exit_price REAL, pnl REAL, reason TEXT,
-                opened_at REAL, closed_at REAL
+                opened_at REAL, closed_at REAL,
+                gross_pnl REAL DEFAULT 0, fees REAL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS daily (
                 day TEXT PRIMARY KEY, start_equity REAL,
@@ -65,11 +67,18 @@ def init_db(path: str | None = None) -> None:
             );
             """
         )
-        # Migration for DBs created before high_water existed (harmless if present).
-        try:
-            c.execute("ALTER TABLE positions ADD COLUMN high_water REAL DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        # Migrations for DBs created before a column existed (harmless if present).
+        # trades.pnl now stores NET P/L (after fees); gross_pnl/fees are the split.
+        for stmt in (
+            "ALTER TABLE positions ADD COLUMN high_water REAL DEFAULT 0",
+            "ALTER TABLE positions ADD COLUMN entry_fee REAL DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN gross_pnl REAL DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN fees REAL DEFAULT 0",
+        ):
+            try:
+                c.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
 def _today() -> str:
@@ -95,9 +104,9 @@ def add_position(p: Position, path: str | None = None) -> int:
     with _connect(path) as c:
         cur = c.execute(
             "INSERT INTO positions (symbol, side, size, entry_price, stop, target, "
-            "opened_at, client_oid, high_water) VALUES (?,?,?,?,?,?,?,?,?)",
+            "opened_at, client_oid, high_water, entry_fee) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (p.symbol, p.side, p.size, p.entry_price, p.stop, p.target, p.opened_at,
-             p.client_oid, p.high_water or p.entry_price),
+             p.client_oid, p.high_water or p.entry_price, p.entry_fee),
         )
         return int(cur.lastrowid)
 
@@ -110,7 +119,7 @@ def open_positions(path: str | None = None) -> list[Position]:
             id=r["id"], symbol=r["symbol"], side=r["side"], size=r["size"],
             entry_price=r["entry_price"], stop=r["stop"], target=r["target"],
             opened_at=r["opened_at"], client_oid=r["client_oid"],
-            high_water=r["high_water"],
+            high_water=r["high_water"], entry_fee=r["entry_fee"],
         )
         for r in rows
     ]
@@ -136,28 +145,46 @@ def has_open_symbol(symbol: str, path: str | None = None) -> bool:
     return row is not None
 
 
-def close_position(position_id: int, exit_price: float, reason: str, path: str | None = None) -> float:
-    """Move an open position to `trades`, update daily P/L + streak. Returns pnl."""
+def close_position(
+    position_id: int,
+    exit_price: float,
+    reason: str,
+    path: str | None = None,
+    *,
+    entry_fee: float = 0.0,
+    exit_fee: float = 0.0,
+) -> float:
+    """Move an open position to `trades`, update daily P/L + streak.
+
+    Records NET realized P/L = gross − (entry_fee + exit_fee), where gross is
+    the long-only price move (exit − entry) × size. The NET figure is what
+    drives the daily-loss limit, the consecutive-loss streak, the stats, and
+    the trade history; the gross figure and the total fee are stored alongside
+    it for transparency. Returns the NET pnl.
+    """
     with _connect(path) as c:
         r = c.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
         if r is None:
             return 0.0
-        pnl = (exit_price - r["entry_price"]) * r["size"]  # long-only
+        gross = (exit_price - r["entry_price"]) * r["size"]  # long-only, pre-fee
+        fees = (entry_fee or 0.0) + (exit_fee or 0.0)
+        net = gross - fees
         now = time.time()
         c.execute(
             "INSERT INTO trades (symbol, side, size, entry_price, exit_price, pnl, "
-            "reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (r["symbol"], r["side"], r["size"], r["entry_price"], exit_price, pnl, reason,
-             r["opened_at"], now),
+            "reason, opened_at, closed_at, gross_pnl, fees) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (r["symbol"], r["side"], r["size"], r["entry_price"], exit_price, net, reason,
+             r["opened_at"], now, gross, fees),
         )
         c.execute("DELETE FROM positions WHERE id=?", (position_id,))
-        streak_delta = "consecutive_losses + 1" if pnl < 0 else "0"
+        # Daily P/L and the losing-streak use NET, so fees count against limits.
+        streak_delta = "consecutive_losses + 1" if net < 0 else "0"
         c.execute(
             f"UPDATE daily SET realized_pnl = realized_pnl + ?, "
             f"consecutive_losses = {streak_delta} WHERE day=?",
-            (pnl, _today()),
+            (net, _today()),
         )
-    return pnl
+    return net
 
 
 # ---- daily risk state ----------------------------------------------------
@@ -215,12 +242,14 @@ def recent_trades(limit: int = 20, path: str | None = None) -> list[dict]:
 
 def stats(path: str | None = None) -> dict:
     with _connect(path) as c:
-        rows = c.execute("SELECT pnl FROM trades").fetchall()
-    pnls = [r["pnl"] for r in rows]
-    wins = [p for p in pnls if p > 0]
+        rows = c.execute("SELECT pnl, gross_pnl, fees FROM trades").fetchall()
+    pnls = [r["pnl"] for r in rows]                 # NET (after fees)
+    wins = [p for p in pnls if p > 0]               # win/loss judged on NET
     return {
         "total_trades": len(pnls),
         "win_rate": (len(wins) / len(pnls) * 100) if pnls else 0.0,
-        "total_pnl": sum(pnls),
+        "total_pnl": sum(pnls),                     # NET total
+        "gross_pnl": sum((r["gross_pnl"] or 0.0) for r in rows),
+        "total_fees": sum((r["fees"] or 0.0) for r in rows),
         "open_positions": count_open(path),
     }

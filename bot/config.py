@@ -120,6 +120,10 @@ EMERGENCY_STOP_PATH = os.getenv("EMERGENCY_STOP_PATH", "STOP")
 # Quote currency of the account we size risk against (USDT for BTC-USDT).
 QUOTE_CURRENCY = os.getenv("QUOTE_CURRENCY", "USDT")
 
+# Taker fee rate PER SIDE, used only to ESTIMATE fees in paper mode (live
+# trading uses the real fee reported by KuCoin fills). KuCoin spot taker ~0.1%.
+FEE_RATE = _f("FEE_RATE", 0.001)
+
 # --- Logging ---
 # Rotating daily log files land here; the newest is bot.log, older ones are
 # bot.log.YYYY-MM-DD. Kept for LOG_BACKUP_DAYS days.

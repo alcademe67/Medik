@@ -50,31 +50,60 @@ def _round_down(value: float, increment: float) -> float:
     return value
 
 
-async def _log_fills(result: dict, symbol: str, action: str) -> None:
-    """Best-effort: fetch and log what a LIVE order actually executed at.
+def _fee_in_quote(fee: float, fee_currency: str, avg_price: float, symbol: str) -> float:
+    """Value a fill fee in the QUOTE currency (e.g. USDT) so it can be
+    subtracted from a quote-denominated P/L.
 
-    Records real filled size, average fill price, and fee paid — the
-    "every fill and fee" audit trail. It runs only for live orders (paper
-    orders never hit the exchange) and never raises: the order has already
-    executed, so a fills-lookup failure must not bubble up and disrupt the
-    engine. It is logged as a warning instead.
+    KuCoin may charge the fee in the quote currency (sells), the base currency
+    (buys), or KCS. Quote is used as-is; a base-currency fee is converted at the
+    fill's average price; anything else we cannot value here, so we log a
+    warning and count 0 (never a wrong-unit subtraction that corrupts P/L).
+    """
+    if not fee:
+        return 0.0
+    base, quote = symbol.split("-")[0], symbol.split("-")[-1]
+    if fee_currency in ("", quote):
+        return fee
+    if fee_currency == base and avg_price > 0:
+        return fee * avg_price
+    logger.warning(
+        "fee of %.8f %s on %s can't be valued in %s — counting 0 for this leg",
+        fee, fee_currency, symbol, quote,
+    )
+    return 0.0
+
+
+async def _settle_fees(result: dict, symbol: str, action: str, notional_estimate: float) -> float:
+    """Return the fee paid for an order (in quote currency) and log the fill.
+
+    Live orders: fetch the REAL fee from KuCoin fills (best-effort — the order
+    already executed, so a fills-lookup failure never raises, it logs and
+    returns 0). Paper/dry-run orders never touch the exchange, so the fee is
+    ESTIMATED as notional × FEE_RATE for realistic paper accounting.
     """
     if result.get("dryRun") is not False:
-        return  # paper/dry-run: nothing executed on the exchange
+        fee = notional_estimate * config.FEE_RATE
+        logger.info(
+            "FILL %s %s (paper) est_fee=%.8f %s on notional %.6f",
+            action, symbol, fee, config.QUOTE_CURRENCY, notional_estimate,
+        )
+        return fee
     order_id = result.get("orderId")
     if not order_id:
         logger.warning("FILL %s %s: live order returned no orderId, cannot fetch fills", action, symbol)
-        return
+        return 0.0
     try:
         f = await kucoin_client.get_order_fills(order_id)
     except kucoin_client.KucoinError as exc:
         logger.warning("FILL %s %s: could not fetch fills for order %s: %s", action, symbol, order_id, exc)
-        return
+        return 0.0
+    fee_quote = _fee_in_quote(float(f["fee"]), f["fee_currency"], float(f["avg_price"]), symbol)
     logger.info(
-        "FILL %s %s size=%.8f avg_price=%.8f fee=%.8f %s fills=%d orderId=%s",
-        action, symbol, f["filled_size"], f["avg_price"], f["fee"],
-        f["fee_currency"], f["fills"], order_id,
+        "FILL %s %s size=%.8f avg_price=%.8f fee=%.8f %s (=%.8f %s) fills=%d orderId=%s",
+        action, symbol, f["filled_size"], f["avg_price"], f["fee"], f["fee_currency"],
+        fee_quote, config.QUOTE_CURRENCY, f["fills"], order_id,
     )
+    return fee_quote
 
 
 async def validate_buy(symbol: str, size: float, ref_price: float, *, live: bool) -> float:
@@ -127,32 +156,48 @@ async def validate_buy(symbol: str, size: float, ref_price: float, *, live: bool
 async def open_long(
     symbol: str, size: float, ref_price: float, stop: float, target: float, *, live: bool
 ) -> tuple[int, dict]:
-    """Validate → place a market buy → persist the position. Gated + logged."""
+    """Validate → place a market buy → persist the position. Gated + logged.
+
+    The entry fee is settled (real fill fee when live, estimated in paper) and
+    stored on the position so it can be deducted from the NET P/L at close.
+    """
     size = await validate_buy(symbol, size, ref_price, live=live)
     await _respect_rate_limit()
     result = await kucoin_client.place_market_order(symbol, "buy", size=size)
+    entry_fee = await _settle_fees(result, symbol, "BUY", size * ref_price)
     pos = state.Position(
         symbol=symbol, side="buy", size=size, entry_price=ref_price,
         stop=stop, target=target, opened_at=time.time(),
         client_oid=result["order"]["clientOid"], high_water=ref_price,
+        entry_fee=entry_fee,
     )
     pos_id = state.add_position(pos)
     logger.info(
-        "OPEN %s size=%s entry=%.6f stop=%.6f target=%.6f live=%s",
-        symbol, size, ref_price, stop, target, not result.get("dryRun"),
+        "OPEN %s size=%s entry=%.6f stop=%.6f target=%.6f entry_fee=%.6f %s live=%s",
+        symbol, size, ref_price, stop, target, entry_fee, config.QUOTE_CURRENCY,
+        not result.get("dryRun"),
     )
-    await _log_fills(result, symbol, "BUY")
     return pos_id, result
 
 
 async def close_long(position: state.Position, exit_price: float, reason: str) -> tuple[float, dict]:
-    """Place a market sell for an open position and record the realized P/L."""
+    """Place a market sell, settle the exit fee, and record the NET realized P/L.
+
+    NET = gross price move − entry fee (paid at open) − exit fee (settled here).
+    The gross figure, total fee, and net are all logged.
+    """
     await _respect_rate_limit()
     result = await kucoin_client.place_market_order(position.symbol, "sell", size=position.size)
-    pnl = state.close_position(position.id, exit_price, reason)
-    logger.info(
-        "CLOSE %s reason=%s exit=%.6f pnl=%.4f live=%s",
-        position.symbol, reason, exit_price, pnl, not result.get("dryRun"),
+    exit_fee = await _settle_fees(result, position.symbol, "SELL", position.size * exit_price)
+    net = state.close_position(
+        position.id, exit_price, reason,
+        entry_fee=position.entry_fee, exit_fee=exit_fee,
     )
-    await _log_fills(result, position.symbol, "SELL")
-    return pnl, result
+    gross = (exit_price - position.entry_price) * position.size
+    total_fee = (position.entry_fee or 0.0) + exit_fee
+    logger.info(
+        "CLOSE %s reason=%s exit=%.6f gross=%.4f fees=%.4f net=%.4f %s live=%s",
+        position.symbol, reason, exit_price, gross, total_fee, net,
+        config.QUOTE_CURRENCY, not result.get("dryRun"),
+    )
+    return net, result
