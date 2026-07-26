@@ -17,9 +17,9 @@ import logging
 import os
 import time
 
-from bot import config, execution, kucoin_client, notify, preflight, risk, state
+from bot import config, execution, kucoin_client, notify, preflight, regime_signal, risk, state
 from bot.logging_setup import setup_logging
-from bot.strategy import Signal, crossover_signal
+from bot.strategy import Signal
 
 setup_logging()
 logger = logging.getLogger("live_engine")
@@ -216,37 +216,39 @@ class Engine:
     async def _tick_symbol(self, symbol: str) -> None:
         """Fetch data for one coin, then manage its position and maybe enter.
 
-        Every branch is logged (prefix ``PIPE``) so the trade pipeline can be
-        traced end to end: signal -> risk -> sizing -> order submission.
+        SIGNAL GENERATION uses the regime framework (bull -> trend, sideways ->
+        mean reversion, high_vol -> breakout, bear -> cash). Everything after
+        the signal — ATR stops, risk checks, sizing, execution — is unchanged.
+        Every branch is logged (prefix ``PIPE``) so the pipeline traces end to
+        end: signal -> risk -> sizing -> order submission.
         """
-        candles = await kucoin_client.fetch_candles(symbol, config.KLINE_TYPE, limit=200)
-        closes = [c[2] for c in candles]
-        # [Q8] first possible exit: not enough history to compute the slow MA.
-        if len(closes) < config.SLOW_MA + 1:
-            logger.info(
-                "PIPE %s: only %d candles (<%d needed for MA%d) — HOLD, no signal yet",
-                symbol, len(closes), config.SLOW_MA + 1, config.SLOW_MA,
-            )
+        rows = await kucoin_client.fetch_ohlcv(symbol, config.KLINE_TYPE, limit=config.REGIME_CANDLES)
+        # [Q8] first possible exit: no usable candle data this tick.
+        if len(rows) < 2:
+            logger.info("PIPE %s: no candle data (%d rows) — HOLD", symbol, len(rows))
             return
+        df = regime_signal.frame_from_ohlcv(rows)
+        closes = df["close"].tolist()
         price = closes[-1]
-        atr = _atr(candles)
-        # [Q1] is a BUY signal generated? Log the signal every tick for every coin.
-        signal = crossover_signal(closes, config.FAST_MA, config.SLOW_MA)
+        # Stops still use the engine's own ATR over (high, low, close) — the
+        # execution pipeline is unchanged, only the signal below is new.
+        atr = _atr(list(zip(df["high"].tolist(), df["low"].tolist(), df["close"].tolist())))
+        # [Q1] is a BUY signal generated? Now from the REGIME framework.
+        signal, regime = regime_signal.signal_from_frame(df)
         logger.info(
-            "PIPE %s: signal=%s price=%.8f atr=%.8f candles=%d MA(fast=%d/slow=%d)",
-            symbol, signal.value, price, atr, len(closes), config.FAST_MA, config.SLOW_MA,
+            "PIPE %s: regime=%s signal=%s price=%.8f atr=%.8f bars=%d",
+            symbol, regime, signal.value, price, atr, len(df),
         )
         await self._manage_open(symbol, price, atr, exit_signal=(signal == Signal.SELL))
         if signal == Signal.BUY:
             await self._maybe_open(symbol, price, atr)
         else:
-            # [Q8] most common real cause: the MA-crossover only returns BUY on
-            # the exact candle where fast crosses above slow. Any other tick =
-            # HOLD/SELL and the entry path is never evaluated -> no order.
+            # [Q8] no entry this tick: the current regime's entry rule didn't
+            # fire (or the regime is bear -> cash). Logged so it's never silent.
             logger.info(
-                "PIPE %s: no entry attempted — signal is %s, not BUY "
-                "(a BUY fires only on the candle fast MA crosses above slow MA)",
-                symbol, signal.value,
+                "PIPE %s: no entry attempted — regime=%s signal=%s "
+                "(bull->trend, sideways->mean-reversion, high_vol->breakout, bear->cash)",
+                symbol, regime, signal.value,
             )
 
     async def run(self) -> None:
@@ -266,8 +268,8 @@ class Engine:
         watchlist = ", ".join(self.symbols)
         await notify.send(
             f"🤖 Engine started — {mode} — {len(self.symbols)} coin(s): {watchlist}. "
-            f"MA({config.FAST_MA}/{config.SLOW_MA}). {reason}. "
-            f"Recovered {len(recovered)} open position(s)."
+            f"Strategy: regime (bull→trend / sideways→mean-rev / high-vol→breakout / bear→cash). "
+            f"{reason}. Recovered {len(recovered)} open position(s)."
         )
         logger.info(
             "engine start: mode=%s symbols=[%s] reason=%s recovered=%d",

@@ -13,6 +13,15 @@ from bot import config, kucoin_client, live_engine, state
 from bot.config import _parse_symbols
 
 
+def _ohlcv(n, close=100.0, spread=1.0):
+    """n OHLCV dict rows (oldest to newest) with a high-low range so ATR > 0."""
+    return [
+        {"time": 1_600_000_000 + i * 3600, "open": close, "high": close + spread,
+         "low": close - spread, "close": close, "volume": 1000.0}
+        for i in range(n)
+    ]
+
+
 def test_ensure_day_is_synchronous():
     # Guard: if someone makes ensure_day async (or re-adds the await), this fails.
     assert not inspect.iscoroutinefunction(state.ensure_day)
@@ -34,17 +43,15 @@ def test_engine_tick_runs_without_await_typeerror(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "EMERGENCY_STOP_PATH", str(tmp_path / "STOP"))  # absent
     state.init_db()
 
-    # Flat candles -> HOLD signal, atr 0: exercises the ensure_day line without
-    # needing to mock the order path.
-    flat = [(100.0, 100.0, 100.0) for _ in range(60)]
-
-    async def fake_candles(_sym, _ktype, limit=200):
-        return flat
+    # Only 60 bars -> the regime signal is "warming-up" (needs EMA_TREND+2),
+    # so HOLD: exercises the ensure_day line without mocking the order path.
+    async def fake_ohlcv(_sym, _ktype, limit=400):
+        return _ohlcv(60)
 
     async def fake_balance(_cur, account_type="trade"):
         return 1000.0
 
-    monkeypatch.setattr(kucoin_client, "fetch_candles", fake_candles)
+    monkeypatch.setattr(kucoin_client, "fetch_ohlcv", fake_ohlcv)
     monkeypatch.setattr(kucoin_client, "get_available_balance", fake_balance)
 
     engine = live_engine.Engine()
@@ -64,11 +71,8 @@ def test_engine_opens_positions_across_the_watchlist(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LIVE_TRADING", False)                          # paper mode
     state.init_db()
 
-    # Candles with a high-low range so ATR > 0 (a trade won't size without it).
-    candles = [(101.0, 99.0, 100.0) for _ in range(60)]
-
-    async def fake_candles(_sym, _ktype, limit=200):
-        return candles
+    async def fake_ohlcv(_sym, _ktype, limit=400):
+        return _ohlcv(60)      # range gives ATR > 0; the regime signal is forced below
 
     async def fake_balance(_cur, account_type="trade"):
         return 1000.0
@@ -80,12 +84,15 @@ def test_engine_opens_positions_across_the_watchlist(tmp_path, monkeypatch):
     async def fake_notify(*_a, **_k):
         return None
 
-    monkeypatch.setattr(kucoin_client, "fetch_candles", fake_candles)
+    monkeypatch.setattr(kucoin_client, "fetch_ohlcv", fake_ohlcv)
     monkeypatch.setattr(kucoin_client, "get_available_balance", fake_balance)
     monkeypatch.setattr(kucoin_client, "get_symbol_info", fake_info)
     monkeypatch.setattr(live_engine.notify, "send", fake_notify)
-    # Force a BUY on every coin regardless of the MA math, to exercise entries.
-    monkeypatch.setattr(live_engine, "crossover_signal", lambda *_a, **_k: live_engine.Signal.BUY)
+    # Force a regime BUY on every coin, to exercise the entry path.
+    monkeypatch.setattr(
+        live_engine.regime_signal, "signal_from_frame",
+        lambda *_a, **_k: (live_engine.Signal.BUY, "bull"),
+    )
 
     engine = live_engine.Engine()
     engine.symbols = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
@@ -104,12 +111,10 @@ def test_engine_one_bad_coin_does_not_starve_the_others(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LIVE_TRADING", False)
     state.init_db()
 
-    candles = [(101.0, 99.0, 100.0) for _ in range(60)]
-
-    async def fake_candles(sym, _ktype, limit=200):
+    async def fake_ohlcv(sym, _ktype, limit=400):
         if sym == "BAD-USDT":
             raise kucoin_client.KucoinError("candles endpoint down for this coin")
-        return candles
+        return _ohlcv(60)
 
     async def fake_balance(_cur, account_type="trade"):
         return 1000.0
@@ -121,11 +126,14 @@ def test_engine_one_bad_coin_does_not_starve_the_others(tmp_path, monkeypatch):
     async def fake_notify(*_a, **_k):
         return None
 
-    monkeypatch.setattr(kucoin_client, "fetch_candles", fake_candles)
+    monkeypatch.setattr(kucoin_client, "fetch_ohlcv", fake_ohlcv)
     monkeypatch.setattr(kucoin_client, "get_available_balance", fake_balance)
     monkeypatch.setattr(kucoin_client, "get_symbol_info", fake_info)
     monkeypatch.setattr(live_engine.notify, "send", fake_notify)
-    monkeypatch.setattr(live_engine, "crossover_signal", lambda *_a, **_k: live_engine.Signal.BUY)
+    monkeypatch.setattr(
+        live_engine.regime_signal, "signal_from_frame",
+        lambda *_a, **_k: (live_engine.Signal.BUY, "bull"),
+    )
 
     engine = live_engine.Engine()
     engine.symbols = ["BAD-USDT", "ETH-USDT"]

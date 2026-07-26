@@ -5,7 +5,7 @@ import pandas as pd
 
 from trading.config import StrategyParams
 from trading.regime import detect_regime
-from trading.strategy import _breakout_signals, _regime_signals
+from trading.strategy import _breakout_signals, _regime_signals, _trend_signals
 
 
 def _df(closes, volume=1000.0):
@@ -40,3 +40,15 @@ def test_regime_signals_are_clean_and_labelled():
     assert not out["entry"].isna().any() and not out["exit"].isna().any()
     # bear bars must never carry an entry (spot framework stays in cash).
     assert not out.loc[out["regime"] == "bear", "entry"].any()
+
+
+def test_regime_routes_bull_to_trend_following():
+    # Per spec, bull regime uses the trend/momentum entries (not mean reversion).
+    close = 100 + np.linspace(0, 60, 400) + 3 * np.sin(np.arange(400) / 8)
+    df = _df(close)
+    p = StrategyParams()
+    out = _regime_signals(df, p)
+    trend = _trend_signals(df, p)
+    bull = out["regime"] == "bull"
+    # On every bull bar, the framework's entry must equal the trend strategy's.
+    assert (out.loc[bull, "entry"] == trend.loc[bull, "entry"]).all()

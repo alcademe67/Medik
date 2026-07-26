@@ -65,7 +65,8 @@ Pick one with `STRATEGY` in `.env`, then backtest it:
 - **`breakout`** — buy a close above the prior N-bar high on rising volume.
 - **`regime`** — a **market-regime framework**: each bar is classified
   (bull / bear / sideways / high-vol) and routed to the fitting rule — bull
-  → pullbacks, sideways → mean reversion, high-vol → breakout, bear → cash.
+  → trend-following, sideways → mean reversion, high-vol → breakout, bear →
+  cash. This is also the strategy the **live engine** runs (per coin).
 
 ### Compare them head-to-head
 

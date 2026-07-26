@@ -89,27 +89,38 @@ def _breakout_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
 
 def _regime_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
     """Regime-switching framework: each bar uses the entry rule matching its
-    regime — bull -> trend pullback, sideways -> mean reversion, high_vol ->
-    breakout, bear -> cash (no entries). Exits are the union of the component
-    exits; the backtester's stop/target still caps each trade."""
+    regime —
+
+      * bull     -> trend-following (momentum: ride strength)
+      * sideways -> mean reversion (buy the dip, sell the rip)
+      * high_vol -> breakout
+      * bear     -> cash (no entries)
+
+    Exits are the union of the component exits; the stop/target still caps
+    each trade."""
     reg = regime.detect_regime(df, params)
-    # Bull -> trend-following *pullbacks* = buy dips while in an uptrend
-    # (mean reversion WITH the trend filter). Sideways -> pure mean reversion.
-    pullback = _mean_reversion_signals(df, dataclasses.replace(params, meanrev_trend_filter=True))
+    trend = _trend_signals(df, params)
     mrev = _mean_reversion_signals(df, dataclasses.replace(params, meanrev_trend_filter=False))
     brk = _breakout_signals(df, params)
 
     entry = pd.Series(False, index=df.index)
-    entry = entry.mask(reg == "bull", pullback["entry"])
+    entry = entry.mask(reg == "bull", trend["entry"])
     entry = entry.mask(reg == "sideways", mrev["entry"])
     entry = entry.mask(reg == "high_vol", brk["entry"])
     # "bear" -> stay in cash, no entries.
 
     out = brk.copy()  # already carries the indicator columns
     out["entry"] = entry.fillna(False).astype(bool)
-    out["exit"] = (pullback["exit"] | mrev["exit"] | brk["exit"]).fillna(False)
+    out["exit"] = (trend["exit"] | mrev["exit"] | brk["exit"]).fillna(False)
     out["regime"] = reg
     return out
+
+
+def regime_signals(df: pd.DataFrame, params: StrategyParams = DEFAULT_PARAMS) -> pd.DataFrame:
+    """Public entry point for the regime framework — same as selecting
+    STRATEGY=regime, but callable directly (the live engine uses this for its
+    signal, bypassing the env dispatch)."""
+    return _regime_signals(df, params)
 
 
 def generate_signals(df: pd.DataFrame, params: StrategyParams = DEFAULT_PARAMS) -> pd.DataFrame:

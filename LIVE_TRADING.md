@@ -68,6 +68,28 @@ down gracefully on its next tick — no terminal access needed
 restarting. A **daily summary** (realized P/L + all-time stats) is sent to
 your notification channel at each UTC-day rollover.
 
+## Signal strategy: the regime framework
+
+The live engine's **signal** is the market-regime framework, run **per coin**
+every tick. Each coin's recent OHLCV is classified into a regime and routed to
+the fitting rule:
+
+| Regime | Rule the bot uses |
+|--------|-------------------|
+| **bull** (trending up, price > 200 EMA) | trend-following (ride momentum) |
+| **sideways** (no strong trend) | mean reversion (buy the dip, sell the rip) |
+| **high volatility** (large ATR%) | breakout (buy the range break) |
+| **bear** (trending down) | **cash — no entries** |
+
+The regime is logged every tick: `PIPE BTC-USDT: regime=bull signal=BUY ...`.
+It needs `REGIME_CANDLES` (default 400) bars of warm-up for the 200-EMA before
+it acts; until then it reports `regime=warming-up` and holds. The regime rules
+reuse the same tunables as the research engine (`EMA_TREND`, `ADX_MIN`,
+`RSI_OVERSOLD`, `HIGH_VOL_ATR_PCT`, …) from `.env`, so what you backtest with
+`python -m trading compare` is what the live bot runs. **Only the signal
+changed — position sizing, risk caps, stops, logging and the emergency stop
+are exactly as before.**
+
 ## Trading multiple coins (watchlist)
 
 Set `TRADE_SYMBOLS` to a comma/space-separated list and the engine evaluates

@@ -80,6 +80,10 @@ TRADE_INTERVAL_SECONDS = float(os.getenv("TRADE_INTERVAL_SECONDS", "60"))
 KLINE_TYPE = os.getenv("KLINE_TYPE", "5min")  # candle size fed to the strategy
 FAST_MA = int(os.getenv("FAST_MA", "9"))
 SLOW_MA = int(os.getenv("SLOW_MA", "21"))
+# Candles pulled per tick for the regime signal. Must comfortably exceed the
+# trend EMA length (EMA_TREND, default 200) so the regime is warmed up before
+# the bot acts. Raise this if you raise EMA_TREND.
+REGIME_CANDLES = int(os.getenv("REGIME_CANDLES", "400"))
 # Hard cap: the loop refuses to place more than this many orders per day,
 # so a flapping signal or a bug can't drain the account.
 MAX_DAILY_ORDERS = int(os.getenv("MAX_DAILY_ORDERS", "10"))

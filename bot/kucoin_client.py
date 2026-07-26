@@ -336,6 +336,37 @@ async def get_order_fills(order_id: str) -> dict[str, Any]:
     }
 
 
+async def fetch_ohlcv(
+    symbol: str, kline_type: str = "5min", limit: int = 400
+) -> list[dict[str, float]]:
+    """Recent candles as OHLCV dicts, oldest to newest. Public (no auth).
+
+    Full OHLCV including volume — the regime signal needs volume for its
+    breakout/volume-confirmation rules, which the (high, low, close)
+    `fetch_candles` shape can't supply. KuCoin rows (newest first) are
+    [time, open, close, high, low, volume, turnover]; `time` is in seconds.
+    """
+    try:
+        response = await _get_client().get(
+            "/api/v1/market/candles", params={"symbol": symbol, "type": kline_type}
+        )
+    except httpx.HTTPError as exc:
+        raise KucoinError("could not reach KuCoin") from exc
+    rows = _data_or_raise(response) or []
+    out = [
+        {
+            "time": float(r[0]),
+            "open": float(r[1]),
+            "close": float(r[2]),
+            "high": float(r[3]),
+            "low": float(r[4]),
+            "volume": float(r[5]),
+        }
+        for r in reversed(rows)
+    ]
+    return out[-limit:]
+
+
 async def fetch_candles(
     symbol: str, kline_type: str = "5min", limit: int = 200
 ) -> list[tuple[float, float, float]]:
