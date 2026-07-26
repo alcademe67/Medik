@@ -76,10 +76,17 @@ the fitting rule:
 
 | Regime | Rule the bot uses |
 |--------|-------------------|
-| **bull** (trending up, price > 200 EMA) | trend-following (ride momentum) |
+| **bull** (trending up, price > 200 EMA) | trend-following — **rides the trend** |
 | **sideways** (no strong trend) | mean reversion (buy the dip, sell the rip) |
 | **high volatility** (large ATR%) | breakout (buy the range break) |
 | **bear** (trending down) | **cash — no entries** |
+
+**Bull exits (in priority):** the ATR stop-loss and the profit target (the
+safety net, always active) → a **trend break** (fast EMA crosses below slow EMA,
+or price closes below the slow EMA) → the regime turning **bear** (exit to
+cash). Bull deliberately does **not** exit on an overbought RSI or a softening
+MACD, so winners are allowed to run — in testing this held bull trades ~4× longer
+than the earlier exit. Sideways, high-vol and bear behaviour is unchanged.
 
 The regime is logged every tick: `PIPE BTC-USDT: regime=bull signal=BUY ...`.
 It needs `REGIME_CANDLES` (default 400) bars of warm-up for the 200-EMA before

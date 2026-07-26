@@ -109,12 +109,17 @@ def _regime_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
     entry = entry.mask(reg == "high_vol", brk["entry"])
     # "bear" -> stay in cash, no entries.
 
-    # The EXIT must match the regime too. A union of all exits would let the
-    # mean-reversion exit (close >= mid-band, true on most up-trend bars) close
-    # a trend entry almost immediately — trend-following could never ride a
-    # move. So each regime exits on its OWN rule; a bear bar exits to cash.
+    # The EXIT matches the regime. Bull rides the trend: it deliberately does
+    # NOT exit on overbought RSI or a softening MACD (the trend strategy's own
+    # exit) — those close winners far too early in an uptrend. It exits only on
+    # a genuine trend break: the fast EMA falling below the slow EMA, or price
+    # closing below the slow EMA (confirmation). Sideways/high_vol keep their
+    # own exits; a bear bar exits to cash. The ATR stop and profit target (in
+    # the backtester / live engine) stay active as the safety net throughout.
+    bull_exit = (trend["ema_fast"] < trend["ema_slow"]) | (trend["close"] < trend["ema_slow"])
+
     exit_ = pd.Series(False, index=df.index)
-    exit_ = exit_.mask(reg == "bull", trend["exit"])
+    exit_ = exit_.mask(reg == "bull", bull_exit)
     exit_ = exit_.mask(reg == "sideways", mrev["exit"])
     exit_ = exit_.mask(reg == "high_vol", brk["exit"])
     exit_ = exit_.mask(reg == "bear", True)
