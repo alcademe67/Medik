@@ -4,6 +4,7 @@
     python -m trading backtest BTC/USDT 1h      # backtest one pair
     python -m trading backtest-top 1h           # backtest the top scanner hits
     python -m trading compare BTC/USDT 1d       # compare every strategy on one pair
+    python -m trading validate BTC/USDT 1d      # in-sample vs out-of-sample (overfit check)
 
 All read-only. No orders are ever placed.
 """
@@ -91,6 +92,41 @@ def _cmd_compare(symbol: str, timeframe: str) -> None:
     print("\n  Research only — past performance does not predict the future.")
 
 
+def _cmd_validate(symbol: str, timeframe: str) -> None:
+    """Split history into in-sample (first 70%) and out-of-sample (last 30%),
+    backtest each strategy on both, and flag over-fitting. A real edge holds
+    up on data the strategy never saw; in-sample-only gains are a mirage."""
+    ex = Exchange()
+    df = ex.fetch_ohlcv(symbol, timeframe)
+    if len(df) < 100:
+        raise SystemExit("not enough history to split for validation")
+    split = int(len(df) * 0.7)
+    is_df, oos_df = df.iloc[:split], df.iloc[split:]
+
+    print(f"\nWalk-forward check — {symbol} @ {timeframe}")
+    print(f"  in-sample {len(is_df)} bars  |  out-of-sample {len(oos_df)} bars\n")
+    print(f"  {'strategy':<10}{'IS net%':>9}{'OOS net%':>10}{'OOS PF':>8}   verdict")
+    print("  " + "-" * 58)
+    original = config.STRATEGY
+    for name in ("trend", "meanrev", "breakout", "regime"):
+        config.STRATEGY = name
+        isr = backtest.run(is_df, timeframe=timeframe, fee_rate=config.FEE_RATE)
+        oos = backtest.run(oos_df, timeframe=timeframe, fee_rate=config.FEE_RATE)
+        if isr.total_return_pct <= 0:
+            verdict = "no edge (fails in-sample)"
+        elif oos.total_return_pct > 0:
+            verdict = "holds up out-of-sample"
+        else:
+            verdict = "OVERFIT (fails out-of-sample)"
+        oos_pf = "inf" if oos.profit_factor == float("inf") else f"{oos.profit_factor:.2f}"
+        print(
+            f"  {name:<10}{isr.total_return_pct:>+8.2f}%{oos.total_return_pct:>+9.2f}%"
+            f"{oos_pf:>8}   {verdict}"
+        )
+    config.STRATEGY = original
+    print("\n  A real edge survives on unseen data. In-sample-only gains usually don't repeat.")
+
+
 def main() -> None:
     args = sys.argv[1:]
     cmd = args[0] if args else "scan"
@@ -107,6 +143,10 @@ def main() -> None:
             if len(args) < 2:
                 raise SystemExit("usage: python -m trading compare SYMBOL [TIMEFRAME]")
             _cmd_compare(args[1], args[2] if len(args) > 2 else config.TIMEFRAME)
+        elif cmd == "validate":
+            if len(args) < 2:
+                raise SystemExit("usage: python -m trading validate SYMBOL [TIMEFRAME]")
+            _cmd_validate(args[1], args[2] if len(args) > 2 else config.TIMEFRAME)
         else:
             raise SystemExit(f"unknown command: {cmd}")
     except ExchangeError as exc:
