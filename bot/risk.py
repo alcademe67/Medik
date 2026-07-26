@@ -5,9 +5,12 @@ test and reason about. The engine calls `check_can_trade` before looking
 for entries and `position_size` before submitting one.
 
 Rules enforced (all configurable in bot.config.RiskParams):
-  * max risk per trade   — size so that (entry-stop) * size ≈ 1% of equity
+  * max risk per trade    — size so that (entry-stop) * size ≈ 1% of equity
+  * max position notional — never deploy more than a small % of equity in
+                            one position, whatever the stop distance
   * max open positions    — refuse a 4th (default) concurrent position
   * daily loss limit      — halt for the rest of the UTC day past the cap
+  * daily order cap       — refuse more than N entry orders in one UTC day
   * consecutive-loss pause — stop after N losing trades in a row
 """
 
@@ -30,11 +33,17 @@ def check_can_trade(
     realized_pnl_today: float,
     start_equity_today: float | None,
     consecutive_losses: int,
+    orders_today: int = 0,
     params: RiskParams = RISK,
 ) -> TradeDecision:
     """May the bot open a NEW position right now? First failing rule wins."""
     if open_positions >= params.max_open_positions:
         return TradeDecision(False, f"max open positions ({params.max_open_positions}) reached")
+
+    if params.max_daily_orders > 0 and orders_today >= params.max_daily_orders:
+        return TradeDecision(
+            False, f"daily order cap ({params.max_daily_orders}) reached"
+        )
 
     if consecutive_losses >= params.max_consecutive_losses:
         return TradeDecision(
@@ -107,6 +116,12 @@ def position_size(
         return 0.0
     risk_budget = equity * params.max_risk_per_trade
     size = risk_budget / risk_per_unit
+    # Cap the position's NOTIONAL to a small % of equity, independent of the
+    # stop distance. A tight stop makes the risk sizing above want a huge
+    # position; this ceiling keeps any one trade small relative to the account.
+    if params.max_position_pct > 0:
+        max_notional = equity * params.max_position_pct / 100.0
+        size = min(size, max_notional / entry_price)
     # Never spend more cash than we have.
     max_affordable = available_quote / entry_price
     return max(0.0, min(size, max_affordable))

@@ -35,9 +35,11 @@ order, and a minimum interval since the last order has passed.
 
 | Control | Default | Env var |
 |---------|---------|---------|
-| Risk per trade | 1% of equity | `MAX_RISK_PER_TRADE` |
+| Risk per trade (to the stop) | 1% of equity | `MAX_RISK_PER_TRADE` |
+| **Max position size (notional)** | **25% of equity** | **`MAX_POSITION_PCT`** |
 | Max open positions | 3 | `MAX_OPEN_POSITIONS` |
 | Daily loss limit | 5% | `DAILY_LOSS_LIMIT_PCT` |
+| **Daily order cap** | **10 entries/day** | **`MAX_DAILY_ORDERS`** |
 | Pause after N losses | 3 | `MAX_CONSECUTIVE_LOSSES` |
 | Stop-loss | 2×ATR | `STOP_ATR_MULT` |
 | Take-profit | 2:1 | `TAKE_PROFIT_RR` |
@@ -46,6 +48,18 @@ order, and a minimum interval since the last order has passed.
 
 Stops **only ever move up** (toward locking in profit), never down. Every
 stop adjustment is logged and sent to your notification channel.
+
+**Why two size controls?** `MAX_RISK_PER_TRADE` caps the *loss to the stop*
+(1% of equity). But with a tight stop that can still deploy most of the
+account into one trade. `MAX_POSITION_PCT` is a second, independent ceiling
+on the *notional* — no single position may use more than this % of equity,
+whatever the stop distance. For your first live runs, set it small (10–20).
+
+**Order & fee audit trail.** Every live BUY/SELL logs, in `logs/bot.log`, the
+intended order *and* — fetched back from KuCoin — the actual filled size,
+volume-weighted average fill price, and fee paid (`FILL BUY … fee=… USDT`).
+Errors are logged too; a fills-lookup failure is logged but never interrupts
+trading (the order already executed).
 
 **Emergency stop:** create a file named `STOP` in the working directory
 (default; set `EMERGENCY_STOP_PATH`) and the engine halts trading and shuts
@@ -64,6 +78,49 @@ your notification channel at each UTC-day rollover.
 4. **Arm it**: `python -m bot.golive` — pass the health checks, answer the
    attestations honestly, type the confirmation phrase.
 5. Set `LIVE_TRADING=true`, start small (`MAX_RISK_PER_TRADE=0.005` or less).
+
+### Exact `.env` for a small first live trade
+
+The only lines you must add/change to go live are marked ★. Everything else
+has a safe default; the values below just make the first trade deliberately
+small. Copy into `.env`:
+
+```dotenv
+# ★ 1. Master switch (still needs the go-live token below)
+LIVE_TRADING=true
+
+# ★ 2. Your KuCoin key WITH Trade permission, WITHOUT withdrawal permission
+KUCOIN_API_KEY=your_key
+KUCOIN_API_SECRET=your_secret
+KUCOIN_API_PASSPHRASE=your_passphrase
+KUCOIN_KEY_VERSION=2
+
+# 3. What to trade, kept small
+TRADE_SYMBOL=BTC-USDT
+QUOTE_CURRENCY=USDT
+
+# 4. Deliberately conservative risk for the first live runs
+MAX_RISK_PER_TRADE=0.005   # risk 0.5% of equity to the stop
+MAX_POSITION_PCT=10        # never deploy more than 10% of the account per trade
+MAX_OPEN_POSITIONS=1       # one position at a time while you watch it
+DAILY_LOSS_LIMIT_PCT=3     # stop for the day after a 3% account loss
+MAX_DAILY_ORDERS=5         # at most 5 entries a day
+MAX_CONSECUTIVE_LOSSES=2   # pause after 2 losers in a row
+
+# 5. Phone alerts (recommended so you see every fill)
+NTFY_TOPIC=your-unique-topic
+```
+
+Then, in order:
+
+```bash
+python -m bot.preflight     # read-only: confirms keys + shows the live gate
+python -m bot.golive        # arm: health checks, attestations, type the phrase
+python -m bot.live_engine   # start trading (announces LIVE 💸 on startup)
+```
+
+`preflight` and `golive` place **no** orders. The engine prints and notifies
+`LIVE 💸` vs `PAPER` on startup — check that line before walking away.
 
 To disarm at any time: delete the go-live token file (`.golive_confirmed`)
 or set `LIVE_TRADING=false`.

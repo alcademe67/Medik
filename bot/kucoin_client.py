@@ -304,6 +304,31 @@ async def list_active_orders(symbol: str | None = None) -> list[dict]:
     return data or []
 
 
+async def get_order_fills(order_id: str) -> dict[str, Any]:
+    """Aggregate the executed fills for one order. Signed.
+
+    Called right after a live order to record what ACTUALLY happened —
+    filled size, volume-weighted average price, and the total fee paid (in
+    its fee currency). Returns zeros if the order has no fills yet. KuCoin's
+    /api/v1/fills is paginated; we read the first page (a market order for a
+    single small position fills in one or a few prints).
+    """
+    data = await _signed_get("/api/v1/fills", {"orderId": order_id})
+    items = data.get("items", []) if isinstance(data, dict) else (data or [])
+    size = sum(float(i.get("size") or 0) for i in items)
+    funds = sum(float(i.get("funds") or 0) for i in items)
+    fee = sum(float(i.get("fee") or 0) for i in items)
+    fee_currency = str(items[0].get("feeCurrency", "")) if items else ""
+    avg_price = (funds / size) if size > 0 else 0.0
+    return {
+        "filled_size": size,
+        "avg_price": avg_price,
+        "fee": fee,
+        "fee_currency": fee_currency,
+        "fills": len(items),
+    }
+
+
 async def fetch_candles(
     symbol: str, kline_type: str = "5min", limit: int = 200
 ) -> list[tuple[float, float, float]]:

@@ -50,6 +50,33 @@ def _round_down(value: float, increment: float) -> float:
     return value
 
 
+async def _log_fills(result: dict, symbol: str, action: str) -> None:
+    """Best-effort: fetch and log what a LIVE order actually executed at.
+
+    Records real filled size, average fill price, and fee paid — the
+    "every fill and fee" audit trail. It runs only for live orders (paper
+    orders never hit the exchange) and never raises: the order has already
+    executed, so a fills-lookup failure must not bubble up and disrupt the
+    engine. It is logged as a warning instead.
+    """
+    if result.get("dryRun") is not False:
+        return  # paper/dry-run: nothing executed on the exchange
+    order_id = result.get("orderId")
+    if not order_id:
+        logger.warning("FILL %s %s: live order returned no orderId, cannot fetch fills", action, symbol)
+        return
+    try:
+        f = await kucoin_client.get_order_fills(order_id)
+    except kucoin_client.KucoinError as exc:
+        logger.warning("FILL %s %s: could not fetch fills for order %s: %s", action, symbol, order_id, exc)
+        return
+    logger.info(
+        "FILL %s %s size=%.8f avg_price=%.8f fee=%.8f %s fills=%d orderId=%s",
+        action, symbol, f["filled_size"], f["avg_price"], f["fee"],
+        f["fee_currency"], f["fills"], order_id,
+    )
+
+
 async def validate_buy(symbol: str, size: float, ref_price: float, *, live: bool) -> float:
     """Return the (increment-rounded) size if safe, else raise ValidationError.
 
@@ -105,6 +132,7 @@ async def open_long(
         "OPEN %s size=%s entry=%.6f stop=%.6f target=%.6f live=%s",
         symbol, size, ref_price, stop, target, not result.get("dryRun"),
     )
+    await _log_fills(result, symbol, "BUY")
     return pos_id, result
 
 
@@ -117,4 +145,5 @@ async def close_long(position: state.Position, exit_price: float, reason: str) -
         "CLOSE %s reason=%s exit=%.6f pnl=%.4f live=%s",
         position.symbol, reason, exit_price, pnl, not result.get("dryRun"),
     )
+    await _log_fills(result, position.symbol, "SELL")
     return pnl, result

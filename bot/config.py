@@ -117,6 +117,16 @@ class RiskParams:
     # Absolute floor on order notional; the real minimum from the exchange
     # is also enforced per-symbol in execution.py.
     min_order_usdt: float = _f("MIN_ORDER_USDT", 1.0)
+    # Hard ceiling on how much equity a SINGLE position may deploy (its
+    # notional), independent of the risk-to-stop sizing above. With tight
+    # intraday stops the risk sizing can otherwise want ~100% of equity in
+    # one trade; this keeps any one position to a small slice of the account.
+    # 0 disables the cap. Expressed as a percent of equity.
+    max_position_pct: float = _f("MAX_POSITION_PCT", 25.0)
+    # Hard cap on entry (BUY) orders per UTC day, enforced by the live engine
+    # against the persisted trade history (survives restarts). A flapping
+    # signal or a bug cannot churn more than this many entries in a day.
+    max_daily_orders: int = _i("MAX_DAILY_ORDERS", 10)
     # Minimum seconds between order submissions (rate-limit courtesy).
     order_min_interval_s: float = _f("ORDER_MIN_INTERVAL_S", 1.0)
     # Stop management (0 disables each). Stops only ever move up.

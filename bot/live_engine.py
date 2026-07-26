@@ -104,6 +104,7 @@ class Engine:
             realized_pnl_today=state.today_realized_pnl(),
             start_equity_today=state.today_start_equity(),
             consecutive_losses=state.consecutive_losses(),
+            orders_today=state.orders_today(),
         )
         if not decision.allowed:
             logger.info("entry skipped: %s", decision.reason)

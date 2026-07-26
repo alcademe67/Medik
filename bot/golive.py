@@ -38,9 +38,11 @@ async def _run() -> None:
 
     r = config.RISK
     print("\nRisk configuration that will apply:")
-    print(f"  • risk per trade      : {r.max_risk_per_trade * 100:.2f}% of equity")
+    print(f"  • risk per trade      : {r.max_risk_per_trade * 100:.2f}% of equity (to the stop)")
+    print(f"  • max position size   : {r.max_position_pct:.1f}% of equity (notional per trade)")
     print(f"  • max open positions  : {r.max_open_positions}")
     print(f"  • daily loss limit    : {r.daily_loss_limit_pct:.1f}%")
+    print(f"  • daily order cap     : {r.max_daily_orders} entries/day")
     print(f"  • pause after losses  : {r.max_consecutive_losses} in a row")
     print(f"  • stop-loss / target  : {r.stop_atr_mult}×ATR / {r.take_profit_rr}:1")
     print(f"  • symbol              : {config.TRADE_SYMBOL}")

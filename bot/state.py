@@ -12,6 +12,7 @@ Pure storage — it makes no trading decisions. No secrets are ever stored.
 
 from __future__ import annotations
 
+import calendar
 import logging
 import sqlite3
 import time
@@ -73,6 +74,11 @@ def init_db(path: str | None = None) -> None:
 
 def _today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _today_start_epoch() -> float:
+    """Unix timestamp of 00:00:00 UTC today — the cutoff for 'today's' rows."""
+    return float(calendar.timegm(time.strptime(_today(), "%Y-%m-%d")))
 
 
 def ensure_day(start_equity: float, path: str | None = None) -> None:
@@ -178,6 +184,24 @@ def consecutive_losses(path: str | None = None) -> int:
     with _connect(path) as c:
         r = c.execute("SELECT consecutive_losses FROM daily WHERE day=?", (_today(),)).fetchone()
     return int(r["consecutive_losses"]) if r else 0
+
+
+def orders_today(path: str | None = None) -> int:
+    """Number of entry (BUY) orders opened since 00:00 UTC today.
+
+    Counts both positions still open and positions already closed today, so
+    the daily cap survives a restart and can't be reset by closing trades.
+    Each entry is one money-spending order — that's what MAX_DAILY_ORDERS caps.
+    """
+    start = _today_start_epoch()
+    with _connect(path) as c:
+        still_open = c.execute(
+            "SELECT COUNT(*) FROM positions WHERE opened_at >= ?", (start,)
+        ).fetchone()[0]
+        closed = c.execute(
+            "SELECT COUNT(*) FROM trades WHERE opened_at >= ?", (start,)
+        ).fetchone()[0]
+    return int(still_open) + int(closed)
 
 
 # ---- dashboard helpers ---------------------------------------------------

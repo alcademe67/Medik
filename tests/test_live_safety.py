@@ -6,6 +6,7 @@ These guard the properties that keep real money safe.
 """
 
 import asyncio
+import time
 
 import pytest
 
@@ -30,6 +31,25 @@ def test_position_size_zero_on_bad_inputs():
     assert risk.position_size(equity=100, entry_price=100, stop_price=100, available_quote=100) == 0
 
 
+def test_position_size_capped_by_max_position_pct():
+    # Tight 1% stop: risk sizing alone wants 100 units (100% of equity).
+    # The 25% notional cap must clamp it to 25 units (25% of 10000 at price 100).
+    p = RiskParams(max_risk_per_trade=0.01, max_position_pct=25)
+    size = risk.position_size(
+        equity=10_000, entry_price=100, stop_price=99, available_quote=1e9, params=p
+    )
+    assert size == pytest.approx(25.0)
+
+
+def test_position_size_cap_disabled_when_zero():
+    # max_position_pct=0 disables the cap -> full risk-based size returns.
+    p = RiskParams(max_risk_per_trade=0.01, max_position_pct=0)
+    size = risk.position_size(
+        equity=10_000, entry_price=100, stop_price=99, available_quote=1e9, params=p
+    )
+    assert size == pytest.approx(100.0)
+
+
 def test_stop_and_target_math():
     stop, target = risk.stop_and_target(100, atr=5, params=RiskParams(stop_atr_mult=2, take_profit_rr=2))
     assert stop == pytest.approx(90.0)          # 100 - 2*5
@@ -46,6 +66,18 @@ def test_check_can_trade_enforces_every_limit():
                                     start_equity_today=1000, consecutive_losses=0, params=p).allowed  # -6%
     assert risk.check_can_trade(open_positions=1, realized_pnl_today=-10,
                                 start_equity_today=1000, consecutive_losses=1, params=p).allowed
+
+
+def test_check_can_trade_enforces_daily_order_cap():
+    p = RiskParams(max_daily_orders=10)
+    assert not risk.check_can_trade(
+        open_positions=0, realized_pnl_today=0, start_equity_today=1000,
+        consecutive_losses=0, orders_today=10, params=p
+    ).allowed
+    assert risk.check_can_trade(
+        open_positions=0, realized_pnl_today=0, start_equity_today=1000,
+        consecutive_losses=0, orders_today=9, params=p
+    ).allowed
 
 
 # --------------------------------------------------------------- persistence
@@ -73,6 +105,23 @@ def test_state_tracks_losing_streak(tmp_path):
     state.close_position(pid, 95, "stop", db)   # -5 loss
     assert state.consecutive_losses(db) == 1
     assert state.today_realized_pnl(db) == pytest.approx(-5.0)
+
+
+def test_orders_today_counts_open_and_closed_entries(tmp_path):
+    db = str(tmp_path / "s.sqlite3")
+    state.init_db(db)
+    state.ensure_day(1000, db)
+    now = time.time()
+    # An entry opened today and still open counts...
+    state.add_position(state.Position("BTC-USDT", "buy", 1, 100, 90, 120, now, "o1"), db)
+    # ...and an entry opened today that we already closed still counts (can't
+    # be reset by closing the trade — the daily cap must survive round-trips).
+    pid = state.add_position(state.Position("ETH-USDT", "buy", 1, 100, 90, 120, now, "o2"), db)
+    state.close_position(pid, 110, "target", db)
+    assert state.orders_today(db) == 2
+    # A position opened before today (epoch 0) does NOT count toward today.
+    state.add_position(state.Position("SOL-USDT", "buy", 1, 100, 90, 120, 0.0, "old"), db)
+    assert state.orders_today(db) == 2
 
 
 # ---------------------------------------------------- pre-trade validation
@@ -127,6 +176,42 @@ def test_open_long_paper_is_simulated_no_real_order(monkeypatch, tmp_path):
     _id, res = asyncio.run(execution.open_long("BTC-USDT", 1.0, 100.0, 90.0, 120.0, live=False))
     assert res["dryRun"] is True             # place_market_order refused to go live
     assert state.count_open() == 1           # but the paper position is tracked
+
+
+# ------------------------------------------------------ fills & fee logging
+def test_get_order_fills_aggregates(monkeypatch):
+    async def fake_signed_get(path, params=None):
+        assert path == "/api/v1/fills"
+        return {"items": [
+            {"size": "0.5", "funds": "50", "fee": "0.05", "feeCurrency": "USDT"},
+            {"size": "0.5", "funds": "52", "fee": "0.052", "feeCurrency": "USDT"},
+        ]}
+    monkeypatch.setattr(kucoin_client, "_signed_get", fake_signed_get)
+    f = asyncio.run(kucoin_client.get_order_fills("order123"))
+    assert f["filled_size"] == pytest.approx(1.0)
+    assert f["avg_price"] == pytest.approx(102.0)      # 102 funds / 1.0 filled
+    assert f["fee"] == pytest.approx(0.102)
+    assert f["fee_currency"] == "USDT" and f["fills"] == 2
+
+
+def test_log_fills_skips_paper_orders(monkeypatch):
+    called = False
+    async def spy(_oid):
+        nonlocal called
+        called = True
+        return {}
+    monkeypatch.setattr(kucoin_client, "get_order_fills", spy)
+    # A dry-run (paper) result never executed on the exchange -> no fills lookup.
+    asyncio.run(execution._log_fills({"dryRun": True, "order": {}}, "BTC-USDT", "BUY"))
+    assert called is False
+
+
+def test_log_fills_is_best_effort(monkeypatch):
+    async def boom(_oid):
+        raise kucoin_client.KucoinError("fills endpoint down")
+    monkeypatch.setattr(kucoin_client, "get_order_fills", boom)
+    # The order already executed; a fills-lookup failure must NOT raise.
+    asyncio.run(execution._log_fills({"dryRun": False, "orderId": "x"}, "BTC-USDT", "SELL"))
 
 
 # ------------------------------------------------------------- the live gate
