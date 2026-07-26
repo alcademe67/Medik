@@ -89,6 +89,10 @@ class StrategyParams:
     exit_mode: str = os.getenv("EXIT_MODE", "atr").strip().lower()
     profit_target_pct: float = _f("PROFIT_TARGET_PCT", 0.5)   # fixed mode: take profit at +this %
     stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.8)           # fixed mode: stop at -this %
+    # Breakout (high-volatility regime): Donchian channel length.
+    breakout_lookback: int = _i("BREAKOUT_LOOKBACK", 20)
+    # Regime detection: ATR above this % of price counts as "high volatility".
+    high_vol_atr_pct: float = _f("HIGH_VOL_ATR_PCT", 4.0)
 
 
 DEFAULT_PARAMS = StrategyParams()

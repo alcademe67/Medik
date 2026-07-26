@@ -14,9 +14,11 @@ They are pure — the backtester turns those into simulated trades.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pandas as pd
 
-from trading import config, indicators
+from trading import config, indicators, regime
 from trading.config import DEFAULT_PARAMS, StrategyParams
 
 
@@ -73,8 +75,50 @@ def _mean_reversion_signals(df: pd.DataFrame, params: StrategyParams) -> pd.Data
     return out
 
 
+def _breakout_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
+    """High-volatility breakout: buy when price closes above the prior
+    N-bar high on above-average volume; exit when it closes back below the
+    prior N-bar low, or gets overbought."""
+    out = indicators.add_indicators(df, params)
+    prior_high = out["high"].rolling(params.breakout_lookback).max().shift(1)
+    prior_low = out["low"].rolling(params.breakout_lookback).min().shift(1)
+    out["entry"] = ((out["close"] > prior_high) & (out["volume"] > out["vol_ma"])).fillna(False)
+    out["exit"] = ((out["close"] < prior_low) | (out["rsi"] > params.rsi_max)).fillna(False)
+    return out
+
+
+def _regime_signals(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
+    """Regime-switching framework: each bar uses the entry rule matching its
+    regime — bull -> trend pullback, sideways -> mean reversion, high_vol ->
+    breakout, bear -> cash (no entries). Exits are the union of the component
+    exits; the backtester's stop/target still caps each trade."""
+    reg = regime.detect_regime(df, params)
+    # Bull -> trend-following *pullbacks* = buy dips while in an uptrend
+    # (mean reversion WITH the trend filter). Sideways -> pure mean reversion.
+    pullback = _mean_reversion_signals(df, dataclasses.replace(params, meanrev_trend_filter=True))
+    mrev = _mean_reversion_signals(df, dataclasses.replace(params, meanrev_trend_filter=False))
+    brk = _breakout_signals(df, params)
+
+    entry = pd.Series(False, index=df.index)
+    entry = entry.mask(reg == "bull", pullback["entry"])
+    entry = entry.mask(reg == "sideways", mrev["entry"])
+    entry = entry.mask(reg == "high_vol", brk["entry"])
+    # "bear" -> stay in cash, no entries.
+
+    out = brk.copy()  # already carries the indicator columns
+    out["entry"] = entry.fillna(False).astype(bool)
+    out["exit"] = (pullback["exit"] | mrev["exit"] | brk["exit"]).fillna(False)
+    out["regime"] = reg
+    return out
+
+
 def generate_signals(df: pd.DataFrame, params: StrategyParams = DEFAULT_PARAMS) -> pd.DataFrame:
     """Add indicators + boolean `entry`/`exit`, dispatching on STRATEGY."""
-    if config.STRATEGY == "meanrev":
+    strat = config.STRATEGY
+    if strat == "meanrev":
         return _mean_reversion_signals(df, params)
+    if strat == "breakout":
+        return _breakout_signals(df, params)
+    if strat == "regime":
+        return _regime_signals(df, params)
     return _trend_signals(df, params)

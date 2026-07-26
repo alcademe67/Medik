@@ -55,18 +55,28 @@ Research only — optimistic fills, past != future.
 | `strategy.py` | Multi-confirmation long-only signal template |
 | `backtest.py` | Event-driven backtest + CAGR/Sharpe/maxDD/profit-factor |
 
-## Two strategies to test
+## Strategies to test
 
 Pick one with `STRATEGY` in `.env`, then backtest it:
 
-- **`STRATEGY=trend`** (default) — momentum: buy strength and ride the trend.
-- **`STRATEGY=meanrev`** — "buy the dip, sell high": buy when price is
-  oversold and bounces back above the lower Bollinger band, sell when it
-  reverts to the mean. Tune with `RSI_OVERSOLD`, `RSI_OVERBOUGHT`,
-  `MEANREV_TREND_FILTER`.
+- **`trend`** (default) — momentum: buy strength and ride the trend.
+- **`meanrev`** — "buy the dip, sell high": buy oversold bounces off the
+  lower Bollinger band, sell on reversion to the mean.
+- **`breakout`** — buy a close above the prior N-bar high on rising volume.
+- **`regime`** — a **market-regime framework**: each bar is classified
+  (bull / bear / sideways / high-vol) and routed to the fitting rule — bull
+  → pullbacks, sideways → mean reversion, high-vol → breakout, bear → cash.
 
-Both are *templates*. Backtest them (`python -m trading backtest-top 4h`)
-and let the numbers decide — neither is a guaranteed money-maker.
+### Compare them head-to-head
+
+```bash
+python -m trading compare BTC/USDT 1d     # 1d = multi-year coverage
+```
+Backtests **every** strategy on one pair and prints net %, win rate,
+profit factor, max drawdown, and trade count side by side — so the data
+picks the winner. All are *templates*; let the numbers decide. Regime
+detection also lags (it reads the recent state, it can't predict the next
+regime), so treat good backtests as "worth paper-trading", never a promise.
 
 ## Tuning
 
