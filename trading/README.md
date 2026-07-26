@@ -55,6 +55,19 @@ Research only — optimistic fills, past != future.
 | `strategy.py` | Multi-confirmation long-only signal template |
 | `backtest.py` | Event-driven backtest + CAGR/Sharpe/maxDD/profit-factor |
 
+## Two strategies to test
+
+Pick one with `STRATEGY` in `.env`, then backtest it:
+
+- **`STRATEGY=trend`** (default) — momentum: buy strength and ride the trend.
+- **`STRATEGY=meanrev`** — "buy the dip, sell high": buy when price is
+  oversold and bounces back above the lower Bollinger band, sell when it
+  reverts to the mean. Tune with `RSI_OVERSOLD`, `RSI_OVERBOUGHT`,
+  `MEANREV_TREND_FILTER`.
+
+Both are *templates*. Backtest them (`python -m trading backtest-top 4h`)
+and let the numbers decide — neither is a guaranteed money-maker.
+
 ## Tuning
 
 Every strategy knob lives in `StrategyParams` (`config.py`) and is

@@ -47,6 +47,11 @@ SCANNER_TOP_N = _i("SCANNER_TOP_N", 20)
 FEE_RATE = _f("FEE_RATE", 0.001)  # KuCoin spot taker ~0.1%
 INITIAL_CASH = _f("INITIAL_CASH", 10_000)
 
+# Which strategy to run:
+#   "trend"   — momentum: buy strength, ride the trend (the original template)
+#   "meanrev" — buy the dip, sell high (oversold + below lower Bollinger band)
+STRATEGY = os.getenv("STRATEGY", "trend").strip().lower()
+
 
 @dataclass(frozen=True)
 class StrategyParams:
@@ -73,6 +78,12 @@ class StrategyParams:
     bb_period: int = _i("BB_PERIOD", 20)
     bb_std: float = _f("BB_STD", 2.0)
     volume_ma: int = _i("VOLUME_MA", 20)          # volume-confirmation window
+    # Mean-reversion ("buy the dip") knobs:
+    rsi_oversold: float = _f("RSI_OVERSOLD", 30.0)     # buy when RSI dips below this
+    rsi_overbought: float = _f("RSI_OVERBOUGHT", 60.0) # sell when RSI rises above this
+    meanrev_trend_filter: bool = os.getenv(
+        "MEANREV_TREND_FILTER", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}    # only buy dips in an uptrend
 
 
 DEFAULT_PARAMS = StrategyParams()
