@@ -84,6 +84,11 @@ class StrategyParams:
     meanrev_trend_filter: bool = os.getenv(
         "MEANREV_TREND_FILTER", "true"
     ).strip().lower() in {"1", "true", "yes", "on"}    # only buy dips in an uptrend
+    # Exit mode: "atr" (ATR stop + RR target) or "fixed" (fixed-% target/stop,
+    # for scalping tests). In fixed mode the two %s below are used instead of ATR.
+    exit_mode: str = os.getenv("EXIT_MODE", "atr").strip().lower()
+    profit_target_pct: float = _f("PROFIT_TARGET_PCT", 0.5)   # fixed mode: take profit at +this %
+    stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.8)           # fixed mode: stop at -this %
 
 
 DEFAULT_PARAMS = StrategyParams()

@@ -132,12 +132,18 @@ def run(
             elif bool(row["exit"]):
                 close_trade(price, when, "signal")
 
-        if position == 0.0 and bool(row["entry"]) and np.isfinite(row.get("atr", np.nan)):
-            atr_val = row["atr"]
-            if atr_val > 0:
+        if position == 0.0 and bool(row["entry"]):
+            atr_val = row.get("atr", float("nan"))
+            valid = params.exit_mode == "fixed" or (np.isfinite(atr_val) and atr_val > 0)
+            if valid:
                 entry_price = price
-                stop = price - params.atr_stop_mult * atr_val
-                target = price + params.atr_stop_mult * params.risk_reward * atr_val
+                if params.exit_mode == "fixed":
+                    # Scalping: fixed-% take-profit and stop, no ATR needed.
+                    stop = price * (1 - params.stop_loss_pct / 100)
+                    target = price * (1 + params.profit_target_pct / 100)
+                else:
+                    stop = price - params.atr_stop_mult * atr_val
+                    target = price + params.atr_stop_mult * params.risk_reward * atr_val
                 entry_time = when
                 position = (cash * (1 - fee_rate)) / price
                 cash = 0.0
