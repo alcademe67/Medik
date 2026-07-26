@@ -29,7 +29,8 @@ async def _run() -> None:
     print("Running startup health checks...\n")
     checks = await preflight.run_health_checks()
     for c in checks:
-        print(f"  [{'PASS' if c.passed else 'FAIL'}] {c.name} — {c.detail}")
+        tag = "" if c.required else " (advisory)"
+        print(f"  [{'PASS' if c.passed else 'FAIL'}] {c.name}{tag} — {c.detail}")
 
     if not preflight.all_passed(checks):
         print("\n❌ Not all health checks passed. Fix the above and re-run.")
@@ -45,7 +46,7 @@ async def _run() -> None:
     print(f"  • daily order cap     : {r.max_daily_orders} entries/day")
     print(f"  • pause after losses  : {r.max_consecutive_losses} in a row")
     print(f"  • stop-loss / target  : {r.stop_atr_mult}×ATR / {r.take_profit_rr}:1")
-    print(f"  • symbol              : {config.TRADE_SYMBOL}")
+    print(f"  • coins ({len(config.TRADE_SYMBOLS):>2})          : {', '.join(config.TRADE_SYMBOLS)}")
 
     print("\nConfirm each item (type 'y' for yes):")
     for item in ATTESTATIONS:

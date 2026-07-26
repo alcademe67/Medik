@@ -228,3 +228,25 @@ def test_live_gate_requires_both_switch_and_token(monkeypatch, tmp_path):
     with open(token, "w") as fh:
         fh.write("confirmed")
     assert preflight.live_allowed()[0] is True            # both -> armed
+
+
+def test_all_passed_ignores_advisory_symbol_checks():
+    # One coin in a watchlist being untradable is advisory: it must NOT block
+    # live trading (that coin is just skipped at order time). A REQUIRED check
+    # failing still blocks.
+    ok = [
+        preflight.Check("KuCoin reachable", True, ""),
+        preflight.Check("API keys valid (auth OK)", True, ""),
+        preflight.Check("DOGE-USDT tradable", False, "halted", required=False),
+    ]
+    assert preflight.all_passed(ok) is True
+
+    bad = [
+        preflight.Check("KuCoin reachable", True, ""),
+        preflight.Check("API keys valid (auth OK)", False, "rejected"),   # required
+        preflight.Check("BTC-USDT tradable", True, "", required=False),
+    ]
+    assert preflight.all_passed(bad) is False
+
+    # An all-advisory list has no required checks -> not "passed" (empty guard).
+    assert preflight.all_passed([preflight.Check("x", True, "", required=False)]) is False

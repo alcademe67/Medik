@@ -68,6 +68,31 @@ down gracefully on its next tick — no terminal access needed
 restarting. A **daily summary** (realized P/L + all-time stats) is sent to
 your notification channel at each UTC-day rollover.
 
+## Trading multiple coins (watchlist)
+
+Set `TRADE_SYMBOLS` to a comma/space-separated list and the engine evaluates
+**each** coin every tick — more opportunities than watching BTC alone:
+
+```dotenv
+TRADE_SYMBOLS=BTC-USDT, ETH-USDT, SOL-USDT, XRP-USDT, LINK-USDT
+```
+
+All coins share the **same global risk caps**: `MAX_OPEN_POSITIONS` limits how
+many positions exist *in total across every coin*, and the daily loss limit,
+daily order cap, and consecutive-loss pause all count across the whole
+watchlist. So widening the list adds breadth, not extra risk — with
+`MAX_OPEN_POSITIONS=1` the bot still holds only one position at a time, just
+picking whichever coin signals first. One coin having a bad data fetch is
+isolated and never blocks the others. `preflight`/`golive` check every coin.
+
+> **Honest caveat:** more coins ≠ more edge. If the strategy has no edge on
+> BTC, running it on five coins just spreads the same no-edge bet across five
+> markets (and pays five sets of fees). Trading a **fixed list of liquid
+> majors** is deliberate — the engine does *not* auto-chase whatever coin is
+> "surging", because market-buying a pump on a small account usually means bad
+> fills and buying the top. Breadth helps timing/diversification; it is not a
+> substitute for a validated edge.
+
 ## Recommended path to live (do not skip)
 
 1. **Backtest** a strategy until it shows an edge: `python -m trading backtest-top 1h`.
@@ -95,14 +120,15 @@ KUCOIN_API_SECRET=your_secret
 KUCOIN_API_PASSPHRASE=your_passphrase
 KUCOIN_KEY_VERSION=2
 
-# 3. What to trade, kept small
-TRADE_SYMBOL=BTC-USDT
+# 3. What to trade. A watchlist of several liquid coins gives more
+#    opportunities than BTC alone; they all share the risk caps below.
+TRADE_SYMBOLS=BTC-USDT, ETH-USDT, SOL-USDT
 QUOTE_CURRENCY=USDT
 
 # 4. Deliberately conservative risk for the first live runs
 MAX_RISK_PER_TRADE=0.005   # risk 0.5% of equity to the stop
 MAX_POSITION_PCT=10        # never deploy more than 10% of the account per trade
-MAX_OPEN_POSITIONS=1       # one position at a time while you watch it
+MAX_OPEN_POSITIONS=1       # one position at a time (across ALL coins) while you watch
 DAILY_LOSS_LIMIT_PCT=3     # stop for the day after a 3% account loss
 MAX_DAILY_ORDERS=5         # at most 5 entries a day
 MAX_CONSECUTIVE_LOSSES=2   # pause after 2 losers in a row

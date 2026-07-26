@@ -46,7 +46,7 @@ def _atr(candles: list[tuple[float, float, float]], period: int = 14) -> float:
 
 class Engine:
     def __init__(self):
-        self.symbol = config.TRADE_SYMBOL
+        self.symbols = config.TRADE_SYMBOLS
         self.live = False
         self._stop = asyncio.Event()
         self._summary_day: str | None = None  # for the daily-summary rollover
@@ -61,9 +61,9 @@ class Engine:
             return PAPER_EQUITY  # let paper mode work on an empty account
         return bal
 
-    async def _manage_open(self, price: float, atr: float, exit_signal: bool) -> None:
+    async def _manage_open(self, symbol: str, price: float, atr: float, exit_signal: bool) -> None:
         for pos in state.open_positions():
-            if pos.symbol != self.symbol:
+            if pos.symbol != symbol:
                 continue
 
             # Trail / breakeven the stop first (it can only move up).
@@ -96,9 +96,11 @@ class Engine:
                     f"P/L {pnl:+.4f} {config.QUOTE_CURRENCY}"
                 )
 
-    async def _maybe_open(self, price: float, atr: float) -> None:
-        if atr <= 0 or state.has_open_symbol(self.symbol):
+    async def _maybe_open(self, symbol: str, price: float, atr: float) -> None:
+        if atr <= 0 or state.has_open_symbol(symbol):
             return
+        # Risk caps are GLOBAL — counted across every coin in the watchlist —
+        # so more symbols never means more concurrent risk than configured.
         decision = risk.check_can_trade(
             open_positions=state.count_open(),
             realized_pnl_today=state.today_realized_pnl(),
@@ -107,7 +109,7 @@ class Engine:
             orders_today=state.orders_today(),
         )
         if not decision.allowed:
-            logger.info("entry skipped: %s", decision.reason)
+            logger.info("entry skipped (%s): %s", symbol, decision.reason)
             return
 
         equity = await self._equity()
@@ -118,13 +120,13 @@ class Engine:
         if size <= 0:
             return
         try:
-            _id, res = await execution.open_long(self.symbol, size, price, stop, target, live=self.live)
+            _id, res = await execution.open_long(symbol, size, price, stop, target, live=self.live)
         except execution.ValidationError as exc:
-            logger.info("entry rejected by validation: %s", exc)
+            logger.info("entry rejected by validation (%s): %s", symbol, exc)
             return
         tag = "" if res.get("dryRun") is False else "PAPER "
         await notify.send(
-            f"🟢 {tag}BUY {self.symbol} @ {price:.6f} size {size} "
+            f"🟢 {tag}BUY {symbol} @ {price:.6f} size {size} "
             f"(stop {stop:.6f}, target {target:.6f})"
         )
 
@@ -153,18 +155,29 @@ class Engine:
             await self._announce_emergency()
             self._stop.set()
             return
-        candles = await kucoin_client.fetch_candles(self.symbol, config.KLINE_TYPE, limit=200)
+        # Day bookkeeping + the daily summary are global — run them once a tick.
+        state.ensure_day(await self._equity())
+        await self._maybe_daily_summary()
+        # Then evaluate each coin in the watchlist. A data error on one coin is
+        # isolated here so it can't rob the other coins of their turn this tick.
+        for symbol in self.symbols:
+            try:
+                await self._tick_symbol(symbol)
+            except kucoin_client.KucoinError as exc:
+                logger.warning("tick error on %s: %s", symbol, exc)
+
+    async def _tick_symbol(self, symbol: str) -> None:
+        """Fetch data for one coin, then manage its position and maybe enter."""
+        candles = await kucoin_client.fetch_candles(symbol, config.KLINE_TYPE, limit=200)
         closes = [c[2] for c in candles]
         if len(closes) < config.SLOW_MA + 1:
             return
         price = closes[-1]
         atr = _atr(candles)
         signal = crossover_signal(closes, config.FAST_MA, config.SLOW_MA)
-        state.ensure_day(await self._equity())
-        await self._maybe_daily_summary()
-        await self._manage_open(price, atr, exit_signal=(signal == Signal.SELL))
+        await self._manage_open(symbol, price, atr, exit_signal=(signal == Signal.SELL))
         if signal == Signal.BUY:
-            await self._maybe_open(price, atr)
+            await self._maybe_open(symbol, price, atr)
 
     async def run(self) -> None:
         state.init_db()
@@ -178,13 +191,18 @@ class Engine:
             reason = "health checks failed — forced to paper mode"
             logger.warning(reason)
 
-        recovered = [p for p in state.open_positions() if p.symbol == self.symbol]
+        recovered = state.open_positions()
         mode = "LIVE 💸" if self.live else "PAPER (simulated)"
+        watchlist = ", ".join(self.symbols)
         await notify.send(
-            f"🤖 Engine started — {mode} — {self.symbol}, MA({config.FAST_MA}/{config.SLOW_MA}). "
-            f"{reason}. Recovered {len(recovered)} open position(s)."
+            f"🤖 Engine started — {mode} — {len(self.symbols)} coin(s): {watchlist}. "
+            f"MA({config.FAST_MA}/{config.SLOW_MA}). {reason}. "
+            f"Recovered {len(recovered)} open position(s)."
         )
-        logger.info("engine start: mode=%s reason=%s recovered=%d", mode, reason, len(recovered))
+        logger.info(
+            "engine start: mode=%s symbols=[%s] reason=%s recovered=%d",
+            mode, watchlist, reason, len(recovered),
+        )
 
         try:
             while not self._stop.is_set():

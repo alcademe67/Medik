@@ -25,6 +25,11 @@ class Check:
     name: str
     passed: bool
     detail: str
+    # Required checks gate live trading; advisory ones are informational only.
+    # Per-coin tradability is advisory: one halted coin in a watchlist must not
+    # force the whole engine to paper mode — that coin is simply skipped at
+    # order time (execution.validate_buy re-checks tradability before every buy).
+    required: bool = True
 
 
 async def run_health_checks() -> list[Check]:
@@ -59,21 +64,25 @@ async def run_health_checks() -> list[Check]:
         checks.append(Check("API keys valid (auth OK)", False, str(exc)))
         return checks
 
-    try:
-        info = await kucoin_client.get_symbol_info(config.TRADE_SYMBOL)
-        checks.append(Check(f"{config.TRADE_SYMBOL} tradable", info["enable_trading"], "enableTrading flag"))
-        checks.append(
-            Check(f"{config.TRADE_SYMBOL} min size known", info["base_min_size"] > 0,
-                  f"min {info['base_min_size']} base")
-        )
-    except Exception as exc:  # noqa: BLE001
-        checks.append(Check(f"{config.TRADE_SYMBOL} tradable", False, str(exc)))
+    for sym in config.TRADE_SYMBOLS:
+        try:
+            info = await kucoin_client.get_symbol_info(sym)
+            checks.append(Check(f"{sym} tradable", info["enable_trading"], "enableTrading flag", required=False))
+            checks.append(
+                Check(f"{sym} min size known", info["base_min_size"] > 0,
+                      f"min {info['base_min_size']} base", required=False)
+            )
+        except Exception as exc:  # noqa: BLE001
+            checks.append(Check(f"{sym} tradable", False, str(exc), required=False))
 
     return checks
 
 
 def all_passed(checks: list[Check]) -> bool:
-    return bool(checks) and all(c.passed for c in checks)
+    """True if every REQUIRED check passed. Advisory checks (e.g. a single
+    coin being tradable) are reported but do not gate live trading."""
+    required = [c for c in checks if c.required]
+    return bool(required) and all(c.passed for c in required)
 
 
 def golive_confirmed() -> bool:
@@ -97,7 +106,8 @@ async def _main() -> None:
     checks = await run_health_checks()
     for c in checks:
         mark = "PASS" if c.passed else "FAIL"
-        print(f"  [{mark}] {c.name} — {c.detail}")
+        tag = "" if c.required else " (advisory — skips just this coin)"
+        print(f"  [{mark}] {c.name}{tag} — {c.detail}")
 
     allowed, reason = live_allowed()
     print(f"\nHealth checks : {'ALL PASS ✅' if all_passed(checks) else 'SOME FAILED ❌'}")
