@@ -22,8 +22,22 @@ def test_position_size_risks_configured_fraction():
 
 
 def test_position_size_capped_by_available_cash():
-    size = risk.position_size(equity=10_000, entry_price=100, stop_price=90, available_quote=500)
+    # cash_buffer=0 isolates the raw affordability cap (available / price).
+    p = RiskParams(cash_buffer=0.0)
+    size = risk.position_size(equity=10_000, entry_price=100, stop_price=90,
+                              available_quote=500, params=p)
     assert size == pytest.approx(5.0)  # can only afford 5 units at 100
+
+
+def test_position_size_reserves_cash_so_order_fits_balance():
+    # The 200004 fix: sizing to cash must NOT target 100% of the balance — a
+    # slice is held back for the taker fee + slippage. With a 2% buffer, the
+    # cash cap yields 4.9 units (notional 490 = 98% of 500), not 5.0 (100%).
+    p = RiskParams(cash_buffer=0.02, max_position_pct=0, max_risk_per_trade=1.0)
+    bd = risk.size_breakdown(equity=500, entry_price=100, stop_price=99,
+                             available_quote=500, params=p)
+    assert bd["size"] == pytest.approx(4.9)
+    assert bd["size"] * 100 <= 500 * 0.98 + 1e-9      # notional stays under 98%
 
 
 def test_position_size_zero_on_bad_inputs():
@@ -44,9 +58,10 @@ def test_size_breakdown_explains_why_size_is_zero_or_not():
     bd3 = risk.size_breakdown(equity=10_000, entry_price=100, stop_price=90, available_quote=1e9)
     assert bd3["size"] > 0 and "binding constraint" in bd3["reason"]
 
-    # Tiny balance is the binding constraint, and it's named as such.
+    # Tiny balance is the binding constraint, and it's named as such. With the
+    # default 2% cash reserve, 500 buys 4.9 units at 100 (not 5.0 = 100%).
     bd4 = risk.size_breakdown(equity=10_000, entry_price=100, stop_price=90, available_quote=500)
-    assert bd4["size"] == pytest.approx(5.0) and "available cash" in bd4["reason"]
+    assert bd4["size"] == pytest.approx(4.9) and "available cash" in bd4["reason"]
 
 
 def test_position_size_capped_by_max_position_pct():
@@ -173,6 +188,26 @@ def test_validate_insufficient_funds_live_only(monkeypatch, tmp_path):
         asyncio.run(execution.validate_buy("BTC-USDT", 1.0, 100.0, live=True))
     # paper mode does not check real funds -> allowed
     assert asyncio.run(execution.validate_buy("BTC-USDT", 1.0, 100.0, live=False)) == pytest.approx(1.0)
+
+
+def test_validate_buy_reserves_fee_room_prevents_200004(monkeypatch, tmp_path):
+    # Root cause of KuCoin 200004: an order sized to 100% of the balance passes
+    # a naive `notional <= available` check, but its real cost (notional + fee)
+    # overruns the balance. The guard must require room for the fee too.
+    monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))
+    monkeypatch.setattr(config, "FEE_RATE", 0.001)
+    state.init_db()
+    async def info(_s): return _symbol_info()
+    async def bal(_c, account_type="trade"): return 100.0
+    async def active(_s=None): return []
+    monkeypatch.setattr(kucoin_client, "get_symbol_info", info)
+    monkeypatch.setattr(kucoin_client, "get_available_balance", bal)
+    monkeypatch.setattr(kucoin_client, "list_active_orders", active)
+    # notional == available (100): naive check passed -> KuCoin 200004. Now rejected.
+    with pytest.raises(execution.ValidationError):
+        asyncio.run(execution.validate_buy("BTC-USDT", 1.0, 100.0, live=True))
+    # A size leaving room for the fee is accepted (99*1.001 = 99.099 < 100).
+    assert asyncio.run(execution.validate_buy("BTC-USDT", 0.99, 100.0, live=True)) == pytest.approx(0.99)
 
 
 def test_validate_blocks_duplicate_position(monkeypatch, tmp_path):

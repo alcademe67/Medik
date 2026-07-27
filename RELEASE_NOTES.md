@@ -40,6 +40,19 @@ i.e. logged evidence from live/paper runs that a specific condition misbehaves,
 with steps to reproduce. A backtest opinion or an idea is not sufficient grounds
 to change frozen logic.
 
+## Fixes since RC1
+
+Allowed under the freeze (accounting / exchange only — no strategy change):
+
+- **KuCoin `200004 "Balance insufficient"` on order submit.** Sizing to
+  available cash targeted ~100% of the balance, so a market buy's real cost
+  (notional + taker fee, filled at the ask) overran the balance. Fix: a
+  configurable cash reserve (`ORDER_CASH_BUFFER`, default 2%) is held back when
+  sizing, and `validate_buy` now requires `notional + fee ≤ available` before
+  submitting — turning a would-be exchange rejection into a clean local skip.
+  Funds are read from the **trade** account (correct for spot). Set
+  `ORDER_CASH_BUFFER=0.10` to spend ≤90% of the balance.
+
 ## Operating it
 
 See `LIVE_TRADING.md` for setup, the go-live steps, and the risk-control

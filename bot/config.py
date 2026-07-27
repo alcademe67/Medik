@@ -150,6 +150,11 @@ class RiskParams:
     # one trade; this keeps any one position to a small slice of the account.
     # 0 disables the cap. Expressed as a percent of equity.
     max_position_pct: float = _f("MAX_POSITION_PCT", 25.0)
+    # Fraction of the available quote balance to HOLD BACK when sizing to cash,
+    # so a market order's taker fee + slippage can't push the cost above the
+    # balance (KuCoin error 200004 "Balance insufficient"). Sizing never targets
+    # 100% of funds. Raise it to keep a bigger reserve (e.g. 0.10 => spend ≤90%).
+    cash_buffer: float = _f("ORDER_CASH_BUFFER", 0.02)
     # Hard cap on entry (BUY) orders per UTC day, enforced by the live engine
     # against the persisted trade history (survives restarts). A flapping
     # signal or a bug cannot churn more than this many entries in a day.

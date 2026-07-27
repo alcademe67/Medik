@@ -157,10 +157,13 @@ def size_breakdown(
         if cap_size < size:
             size, binding = cap_size, f"max_position_pct cap ({params.max_position_pct}%)"
 
-    affordable = available_quote / entry_price
+    # Reserve a slice of cash for the taker fee + slippage so a market order's
+    # cost can't exceed the balance (KuCoin 200004). Never size to 100% of funds.
+    usable_quote = available_quote * (1.0 - params.cash_buffer)
+    affordable = max(0.0, usable_quote) / entry_price
     info["affordable"] = affordable
     if affordable < size:
-        size, binding = affordable, "available cash"
+        size, binding = affordable, f"available cash (≤{(1 - params.cash_buffer) * 100:.0f}% of balance)"
 
     size = max(0.0, size)
     info["size"] = size

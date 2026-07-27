@@ -142,10 +142,23 @@ async def validate_buy(symbol: str, size: float, ref_price: float, *, live: bool
 
     if live:
         quote = symbol.split("-")[-1]
-        available = await kucoin_client.get_available_balance(quote)
-        if notional > available:
+        # Spot market orders draw from the TRADE account (not main/funding).
+        available = await kucoin_client.get_available_balance(quote, "trade")
+        fee = notional * config.FEE_RATE
+        required = notional + fee
+        # Right before submit: what we'd spend (#1), what the API returns (#2),
+        # which account (#3), and the size/notional (#4).
+        logger.info(
+            "validate_buy %s FUNDS: size=%.8f notional=%.6f est_fee=%.6f required=%.6f "
+            "available(%s trade)=%.6f",
+            symbol, size, notional, fee, required, quote, available,
+        )
+        # Require room for the fee too, so we never submit an order KuCoin will
+        # reject with 200004 (cost = notional + fee must fit the balance).
+        if required > available:
             raise ValidationError(
-                f"insufficient {quote}: need {notional:.4f}, have {available:.4f}"
+                f"insufficient {quote}: order needs {required:.4f} "
+                f"(notional {notional:.4f} + fee {fee:.4f}), trade account has {available:.4f}"
             )
         if await kucoin_client.list_active_orders(symbol):
             raise ValidationError(f"an active order already exists for {symbol}")
