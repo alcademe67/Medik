@@ -60,6 +60,16 @@ Allowed under the freeze (accounting / exchange only — no strategy change):
   so the later SELL never tries to offload more base than we hold. SELLs stay
   base-size. **Verify the first live buy→sell round-trip** (mock-tested only).
 
+- **Phantom position on restart → SELL of coins not held (200004).** The engine
+  recovered a position from SQLite that the exchange didn't actually hold, then
+  a stop/target check fired a SELL for base it didn't own. Fixes: (1) startup
+  **reconciliation** — each recovered position is compared to the exchange
+  base-asset balance and removed (no P/L booked) if unbacked, with a logged
+  reason; (2) `close_long` never submits a SELL unless the exchange confirms
+  the base balance (else it removes the phantom, no order); (3) while
+  `regime=warming-up` the engine submits **no orders** at all. `state.remove_position`
+  deletes a phantom without recording a trade.
+
 ## Operating it
 
 See `LIVE_TRADING.md` for setup, the go-live steps, and the risk-control

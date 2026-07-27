@@ -222,6 +222,28 @@ async def close_long(position: state.Position, exit_price: float, reason: str) -
     NET = gross price move − entry fee (paid at open) − exit fee (settled here).
     The gross figure, total fee, and net are all logged.
     """
+    # Never submit a SELL unless the exchange confirms it holds the base asset
+    # (defends against a phantom position mid-run — e.g. coin withdrawn/sold
+    # outside the bot). Live only; paper positions are simulated.
+    if config.LIVE_TRADING:
+        base = position.symbol.split("-")[0]
+        try:
+            held = await kucoin_client.get_available_balance(base, "trade")
+        except kucoin_client.KucoinError as exc:
+            logger.warning(
+                "CLOSE %s: could not verify %s balance (%s) — skipping sell this tick",
+                position.symbol, base, exc,
+            )
+            return 0.0, {"aborted": True}
+        if held < position.size * 0.999:
+            state.remove_position(position.id)
+            logger.warning(
+                "CLOSE %s: exchange holds only %.8f %s (need %.8f) — removed phantom "
+                "position id=%s, NO sell sent",
+                position.symbol, held, base, position.size, position.id,
+            )
+            return 0.0, {"phantom": True}
+
     await _respect_rate_limit()
     # SELL stays base-size (offload exactly the base we hold from the buy).
     result = await kucoin_client.place_market_order(position.symbol, "sell", size=position.size)

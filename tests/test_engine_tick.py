@@ -104,6 +104,68 @@ def test_engine_opens_positions_across_the_watchlist(tmp_path, monkeypatch):
     assert open_syms == {"BTC-USDT", "ETH-USDT", "SOL-USDT"}
 
 
+def test_reconcile_removes_phantom_keeps_real(tmp_path, monkeypatch):
+    """Startup reconciliation drops a recovered position the exchange doesn't
+    hold (phantom) and keeps one it does."""
+    monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))
+    state.init_db()
+    state.add_position(state.Position("BTC-USDT", "buy", 0.01, 100, 96, 108, 0.0, "b"))
+    state.add_position(state.Position("ETH-USDT", "buy", 0.50, 100, 96, 108, 0.0, "e"))
+
+    async def bal(cur, account_type="trade"):
+        return {"BTC": 0.0, "ETH": 0.5}.get(cur, 0.0)   # no BTC on exchange, ETH present
+
+    async def noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(kucoin_client, "get_available_balance", bal)
+    monkeypatch.setattr(live_engine.notify, "send", noop)
+
+    eng = live_engine.Engine()
+    eng.live = True
+    asyncio.run(eng._reconcile_positions())
+
+    assert {p.symbol for p in state.open_positions()} == {"ETH-USDT"}  # phantom BTC gone
+
+
+def test_no_order_submitted_while_warming_up(tmp_path, monkeypatch):
+    """regime=warming-up must submit NOTHING — even an in-the-money exit is skipped."""
+    monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))
+    monkeypatch.setattr(config, "EMERGENCY_STOP_PATH", str(tmp_path / "STOP"))
+    monkeypatch.setattr(config, "LIVE_TRADING", True)
+    state.init_db()
+    # Target 99 < the flat price 100, so management WOULD sell if it ran.
+    state.add_position(state.Position("BTC-USDT", "buy", 0.01, 100, 96, 99, 0.0, "o"))
+
+    async def fake_ohlcv(_s, _k, limit=400):
+        return _ohlcv(60)     # 60 bars < 202 -> regime is "warming-up"
+
+    async def fake_balance(_c, account_type="trade"):
+        return 1000.0
+
+    orders = {"n": 0}
+
+    async def place(*_a, **_k):
+        orders["n"] += 1
+        return {"dryRun": False, "orderId": "x", "order": {}}
+
+    async def noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(kucoin_client, "fetch_ohlcv", fake_ohlcv)
+    monkeypatch.setattr(kucoin_client, "get_available_balance", fake_balance)
+    monkeypatch.setattr(kucoin_client, "place_market_order", place)
+    monkeypatch.setattr(live_engine.notify, "send", noop)
+
+    eng = live_engine.Engine()
+    eng.symbols = ["BTC-USDT"]
+    eng.live = True
+    asyncio.run(eng._tick_symbol("BTC-USDT"))
+
+    assert orders["n"] == 0            # nothing submitted while warming-up
+    assert state.count_open() == 1     # the position is left untouched
+
+
 def test_engine_one_bad_coin_does_not_starve_the_others(tmp_path, monkeypatch):
     """A data error on one coin must be isolated — the other coins still trade."""
     monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))

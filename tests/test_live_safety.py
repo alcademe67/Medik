@@ -314,6 +314,32 @@ def test_open_long_live_buys_by_funds_and_records_filled_base(monkeypatch, tmp_p
     assert pos.entry_price == pytest.approx(100.0)         # actual fill price
 
 
+# ------------------------------------------------- phantom / sell reconciliation
+def test_close_long_aborts_and_removes_phantom_when_base_missing(monkeypatch, tmp_path):
+    # Requirement 3: never SELL base the exchange doesn't hold. If it's missing,
+    # remove the phantom position and submit no order.
+    monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))
+    monkeypatch.setattr(config, "LIVE_TRADING", True)
+    state.init_db()
+    state.add_position(state.Position("BTC-USDT", "buy", 0.01, 100, 96, 108, 0.0, "o"))
+    pos = state.open_positions()[0]
+
+    placed = {"n": 0}
+    async def bal(_c, account_type="trade"):
+        return 0.0                       # exchange holds no BTC
+    async def place(*_a, **_k):
+        placed["n"] += 1
+        return {"dryRun": False, "orderId": "x", "order": {}}
+    monkeypatch.setattr(kucoin_client, "get_available_balance", bal)
+    monkeypatch.setattr(kucoin_client, "place_market_order", place)
+
+    net, res = asyncio.run(execution.close_long(pos, 108.0, "target"))
+    assert res.get("phantom") is True
+    assert placed["n"] == 0             # NO sell was submitted
+    assert net == 0.0
+    assert state.count_open() == 0      # phantom removed
+
+
 # ------------------------------------------------------ net P/L accounting
 def test_position_entry_fee_roundtrips(tmp_path):
     db = str(tmp_path / "s.sqlite3")

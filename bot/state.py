@@ -134,6 +134,18 @@ def update_stop(position_id: int, new_stop: float, high_water: float, path: str 
         )
 
 
+def remove_position(position_id: int, path: str | None = None) -> None:
+    """Delete an open position WITHOUT recording a trade or any P/L.
+
+    For reconciliation only — e.g. a position recovered on startup that the
+    exchange does not actually hold (a phantom: the buy never really filled, or
+    the coin was moved/sold outside the bot). It was never a real trade, so it
+    must not book a fake P/L into the daily total or the stats.
+    """
+    with _connect(path) as c:
+        c.execute("DELETE FROM positions WHERE id=?", (position_id,))
+
+
 def count_open(path: str | None = None) -> int:
     with _connect(path) as c:
         return int(c.execute("SELECT COUNT(*) FROM positions").fetchone()[0])

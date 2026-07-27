@@ -61,6 +61,39 @@ class Engine:
             return PAPER_EQUITY  # let paper mode work on an empty account
         return bal
 
+    async def _reconcile_positions(self) -> None:
+        """Startup reconciliation: drop 'phantom' positions the exchange doesn't
+        actually hold.
+
+        A position recovered from SQLite may not correspond to a real holding —
+        e.g. the buy never truly filled, or the coin was sold/moved outside the
+        bot. Managing such a phantom would fire a SELL for base the account
+        doesn't own → KuCoin 200004. So for each recovered position (live only —
+        paper positions are simulated), compare its base-asset size to the
+        available balance on the exchange and remove any that isn't backed.
+        """
+        if not self.live:
+            return
+        for pos in state.open_positions():
+            base = pos.symbol.split("-")[0]
+            try:
+                held = await kucoin_client.get_available_balance(base, "trade")
+            except kucoin_client.KucoinError as exc:
+                logger.warning(
+                    "reconcile %s: could not read %s balance (%s) — keeping position for now",
+                    pos.symbol, base, exc,
+                )
+                continue
+            if held < pos.size * 0.999:  # exchange doesn't hold enough base to back it
+                state.remove_position(pos.id)
+                msg = (
+                    f"🧹 Removed phantom {pos.symbol} position (id={pos.id}): local size "
+                    f"{pos.size:.8f} {base} but exchange holds only {held:.8f} {base}. "
+                    f"No SELL sent."
+                )
+                logger.warning(msg)
+                await notify.send(msg)
+
     async def _manage_open(self, symbol: str, price: float, atr: float, exit_signal: bool) -> None:
         for pos in state.open_positions():
             if pos.symbol != symbol:
@@ -89,6 +122,8 @@ class Engine:
                 reason = "signal"
             if reason:
                 pnl, res = await execution.close_long(pos, price, reason)
+                if res.get("phantom") or res.get("aborted"):
+                    continue  # no real SELL happened — nothing to announce
                 tag = "" if res.get("dryRun") is False else "PAPER "
                 emoji = "🎯" if reason == "target" else "🛑" if reason == "stop" else "↩️"
                 await notify.send(
@@ -239,6 +274,12 @@ class Engine:
             "PIPE %s: regime=%s signal=%s price=%.8f atr=%.8f bars=%d",
             symbol, regime, signal.value, price, atr, len(df),
         )
+        # Requirement: while warming-up (not enough history to classify a
+        # regime) submit NOTHING — no entries and no exits. Guarantees no order
+        # goes out on a HOLD/warming-up tick.
+        if regime == "warming-up":
+            logger.info("PIPE %s: warming-up — no orders submitted (need more candles)", symbol)
+            return
         await self._manage_open(symbol, price, atr, exit_signal=(signal == Signal.SELL))
         if signal == Signal.BUY:
             await self._maybe_open(symbol, price, atr)
@@ -262,6 +303,10 @@ class Engine:
             self.live = False
             reason = "health checks failed — forced to paper mode"
             logger.warning(reason)
+
+        # Reconcile recovered positions against the exchange BEFORE trading, so a
+        # phantom can't trigger a SELL on the first tick.
+        await self._reconcile_positions()
 
         recovered = state.open_positions()
         mode = "LIVE 💸" if self.live else "PAPER (simulated)"
