@@ -52,6 +52,13 @@ Allowed under the freeze (accounting / exchange only — no strategy change):
   submitting — turning a would-be exchange rejection into a clean local skip.
   Funds are read from the **trade** account (correct for spot). Set
   `ORDER_CASH_BUFFER=0.10` to spend ≤90% of the balance.
+- **Market BUYs now placed by `funds` (quote to spend), not `size` (base).** A
+  size-based market buy makes KuCoin reserve funds against the order book and
+  can overrun the balance (200004). A funds order spends at most the amount
+  named, so it can't. The position records the ACTUAL filled base from the
+  fills, conservatively reduced by one taker fee and floored to the lot size,
+  so the later SELL never tries to offload more base than we hold. SELLs stay
+  base-size. **Verify the first live buy→sell round-trip** (mock-tested only).
 
 ## Operating it
 

@@ -256,9 +256,9 @@ def test_settle_fees_paper_estimates_without_network(monkeypatch):
     monkeypatch.setattr(kucoin_client, "get_order_fills", spy)
     monkeypatch.setattr(config, "FEE_RATE", 0.001)
     # Paper: fee is ESTIMATED as notional * FEE_RATE; the fills endpoint is untouched.
-    fee = asyncio.run(execution._settle_fees({"dryRun": True, "order": {}}, "BTC-USDT", "BUY", 250.0))
+    settle = asyncio.run(execution._settle_fees({"dryRun": True, "order": {}}, "BTC-USDT", "BUY", 250.0))
     assert called is False
-    assert fee == pytest.approx(0.25)
+    assert settle["fee"] == pytest.approx(0.25) and settle["filled_size"] == 0.0
 
 
 def test_settle_fees_live_best_effort_zero_on_error(monkeypatch):
@@ -266,8 +266,8 @@ def test_settle_fees_live_best_effort_zero_on_error(monkeypatch):
         raise kucoin_client.KucoinError("fills endpoint down")
     monkeypatch.setattr(kucoin_client, "get_order_fills", boom)
     # The order already executed; a fills-lookup failure must NOT raise -> fee 0.
-    fee = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "x"}, "BTC-USDT", "SELL", 100.0))
-    assert fee == 0.0
+    settle = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "x"}, "BTC-USDT", "SELL", 100.0))
+    assert settle["fee"] == 0.0
 
 
 def test_settle_fees_converts_base_currency_fee_to_quote(monkeypatch):
@@ -276,8 +276,42 @@ def test_settle_fees_converts_base_currency_fee_to_quote(monkeypatch):
                 "fee_currency": "BTC", "fills": 1}
     monkeypatch.setattr(kucoin_client, "get_order_fills", fills)
     # A BUY fee charged in BTC is valued in USDT at the fill price: 0.002 * 100 = 0.20.
-    fee = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "o"}, "BTC-USDT", "BUY", 200.0))
-    assert fee == pytest.approx(0.20)
+    settle = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "o"}, "BTC-USDT", "BUY", 200.0))
+    assert settle["fee"] == pytest.approx(0.20)
+    assert settle["filled_size"] == pytest.approx(2.0)
+
+
+def test_open_long_live_buys_by_funds_and_records_filled_base(monkeypatch, tmp_path):
+    # Option 2: a live BUY is placed by FUNDS (quote to spend), never by base
+    # size — so it can't overrun the balance (KuCoin 200004). The position then
+    # holds the ACTUAL filled base, conservatively net of the taker fee so the
+    # later SELL can never try to offload more than we own.
+    monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))
+    monkeypatch.setattr(config, "LIVE_TRADING", True)
+    monkeypatch.setattr(config, "FEE_RATE", 0.001)
+    state.init_db()
+    captured = {}
+    async def info(_s): return _symbol_info(base_increment=0.00000001)
+    async def bal(_c, account_type="trade"): return 1000.0
+    async def active(_s=None): return []
+    async def place(symbol, side, *, funds=None, size=None):
+        captured["funds"], captured["size"] = funds, size
+        return {"dryRun": False, "orderId": "ORD-BUY", "order": {"clientOid": "c1"}}
+    async def fills(_oid):
+        return {"filled_size": 0.02, "avg_price": 100.0, "fee": 0.002,
+                "fee_currency": "USDT", "fills": 1}
+    monkeypatch.setattr(kucoin_client, "get_symbol_info", info)
+    monkeypatch.setattr(kucoin_client, "get_available_balance", bal)
+    monkeypatch.setattr(kucoin_client, "list_active_orders", active)
+    monkeypatch.setattr(kucoin_client, "place_market_order", place)
+    monkeypatch.setattr(kucoin_client, "get_order_fills", fills)
+
+    asyncio.run(execution.open_long("BTC-USDT", 0.02, 100.0, 96.0, 108.0, live=True))
+    # placed by funds (=0.02*100), NOT by base size
+    assert captured["funds"] == pytest.approx(2.0) and captured["size"] is None
+    pos = state.open_positions()[0]
+    assert pos.size == pytest.approx(0.02 * (1 - 0.001))   # filled net of fee
+    assert pos.entry_price == pytest.approx(100.0)         # actual fill price
 
 
 # ------------------------------------------------------ net P/L accounting

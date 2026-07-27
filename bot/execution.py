@@ -73,13 +73,14 @@ def _fee_in_quote(fee: float, fee_currency: str, avg_price: float, symbol: str) 
     return 0.0
 
 
-async def _settle_fees(result: dict, symbol: str, action: str, notional_estimate: float) -> float:
-    """Return the fee paid for an order (in quote currency) and log the fill.
+async def _settle_fees(result: dict, symbol: str, action: str, notional_estimate: float) -> dict:
+    """Return {fee, filled_size, avg_price} for an order and log the fill.
 
-    Live orders: fetch the REAL fee from KuCoin fills (best-effort — the order
-    already executed, so a fills-lookup failure never raises, it logs and
-    returns 0). Paper/dry-run orders never touch the exchange, so the fee is
-    ESTIMATED as notional × FEE_RATE for realistic paper accounting.
+    `fee` is valued in the QUOTE currency. Live orders: real values from KuCoin
+    fills (best-effort — the order already executed, so a fills-lookup failure
+    never raises; it logs and returns zeros). Paper/dry-run orders never touch
+    the exchange, so the fee is ESTIMATED as notional × FEE_RATE and filled_size
+    is 0 (the caller falls back to the intended size).
     """
     if result.get("dryRun") is not False:
         fee = notional_estimate * config.FEE_RATE
@@ -87,23 +88,23 @@ async def _settle_fees(result: dict, symbol: str, action: str, notional_estimate
             "FILL %s %s (paper) est_fee=%.8f %s on notional %.6f",
             action, symbol, fee, config.QUOTE_CURRENCY, notional_estimate,
         )
-        return fee
+        return {"fee": fee, "filled_size": 0.0, "avg_price": 0.0}
     order_id = result.get("orderId")
     if not order_id:
         logger.warning("FILL %s %s: live order returned no orderId, cannot fetch fills", action, symbol)
-        return 0.0
+        return {"fee": 0.0, "filled_size": 0.0, "avg_price": 0.0}
     try:
         f = await kucoin_client.get_order_fills(order_id)
     except kucoin_client.KucoinError as exc:
         logger.warning("FILL %s %s: could not fetch fills for order %s: %s", action, symbol, order_id, exc)
-        return 0.0
+        return {"fee": 0.0, "filled_size": 0.0, "avg_price": 0.0}
     fee_quote = _fee_in_quote(float(f["fee"]), f["fee_currency"], float(f["avg_price"]), symbol)
     logger.info(
         "FILL %s %s size=%.8f avg_price=%.8f fee=%.8f %s (=%.8f %s) fills=%d orderId=%s",
         action, symbol, f["filled_size"], f["avg_price"], f["fee"], f["fee_currency"],
         fee_quote, config.QUOTE_CURRENCY, f["fills"], order_id,
     )
-    return fee_quote
+    return {"fee": fee_quote, "filled_size": float(f["filled_size"]), "avg_price": float(f["avg_price"])}
 
 
 async def validate_buy(symbol: str, size: float, ref_price: float, *, live: bool) -> float:
@@ -176,19 +177,41 @@ async def open_long(
     """
     size = await validate_buy(symbol, size, ref_price, live=live)
     await _respect_rate_limit()
-    result = await kucoin_client.place_market_order(symbol, "buy", size=size)
-    entry_fee = await _settle_fees(result, symbol, "BUY", size * ref_price)
+    # Place the BUY by FUNDS (quote to spend), NOT by base size. A market buy
+    # specified by base size makes KuCoin reserve funds against the order book
+    # and can overrun the balance (error 200004). A funds order spends at most
+    # the amount we name, so it can never cost more than we have. funds = the
+    # sized notional, which already sits inside the cash buffer.
+    funds = round(size * ref_price, 4)
+    result = await kucoin_client.place_market_order(symbol, "buy", funds=funds)
+    settle = await _settle_fees(result, symbol, "BUY", funds)
+    entry_fee = settle["fee"]
+
+    # Record the base we ACTUALLY hold so the later SELL offloads exactly that.
+    # Live: from the fills, conservatively reduced by one taker fee and floored
+    # to the lot size, so we never try to sell more base than we own (KuCoin
+    # deducts the buy fee from the coin received). Paper: the intended size.
+    if result.get("dryRun") is False and settle["filled_size"] > 0:
+        info = await kucoin_client.get_symbol_info(symbol)
+        held = settle["filled_size"] * (1 - config.FEE_RATE)
+        base_size = _round_down(held, info["base_increment"])
+        entry_price = settle["avg_price"] or ref_price
+    else:
+        base_size = size
+        entry_price = ref_price
+
     pos = state.Position(
-        symbol=symbol, side="buy", size=size, entry_price=ref_price,
+        symbol=symbol, side="buy", size=base_size, entry_price=entry_price,
         stop=stop, target=target, opened_at=time.time(),
-        client_oid=result["order"]["clientOid"], high_water=ref_price,
+        client_oid=result["order"]["clientOid"], high_water=entry_price,
         entry_fee=entry_fee,
     )
     pos_id = state.add_position(pos)
     logger.info(
-        "OPEN %s size=%s entry=%.6f stop=%.6f target=%.6f entry_fee=%.6f %s live=%s",
-        symbol, size, ref_price, stop, target, entry_fee, config.QUOTE_CURRENCY,
-        not result.get("dryRun"),
+        "OPEN %s funds=%.6f %s filled=%.8f base_held=%.8f entry=%.6f stop=%.6f "
+        "target=%.6f entry_fee=%.6f %s live=%s",
+        symbol, funds, config.QUOTE_CURRENCY, settle["filled_size"], base_size,
+        entry_price, stop, target, entry_fee, config.QUOTE_CURRENCY, not result.get("dryRun"),
     )
     return pos_id, result
 
@@ -200,8 +223,9 @@ async def close_long(position: state.Position, exit_price: float, reason: str) -
     The gross figure, total fee, and net are all logged.
     """
     await _respect_rate_limit()
+    # SELL stays base-size (offload exactly the base we hold from the buy).
     result = await kucoin_client.place_market_order(position.symbol, "sell", size=position.size)
-    exit_fee = await _settle_fees(result, position.symbol, "SELL", position.size * exit_price)
+    exit_fee = (await _settle_fees(result, position.symbol, "SELL", position.size * exit_price))["fee"]
     net = state.close_position(
         position.id, exit_price, reason,
         entry_fee=position.entry_fee, exit_fee=exit_fee,
