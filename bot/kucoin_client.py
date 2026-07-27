@@ -336,6 +336,14 @@ async def get_order_fills(order_id: str) -> dict[str, Any]:
     }
 
 
+# Seconds per KuCoin candle type — used to request a wide enough time window.
+_KLINE_SECONDS = {
+    "1min": 60, "3min": 180, "5min": 300, "15min": 900, "30min": 1800,
+    "1hour": 3600, "2hour": 7200, "4hour": 14400, "6hour": 21600,
+    "8hour": 28800, "12hour": 43200, "1day": 86400, "1week": 604800,
+}
+
+
 async def fetch_ohlcv(
     symbol: str, kline_type: str = "5min", limit: int = 400
 ) -> list[dict[str, float]]:
@@ -345,11 +353,21 @@ async def fetch_ohlcv(
     breakout/volume-confirmation rules, which the (high, low, close)
     `fetch_candles` shape can't supply. KuCoin rows (newest first) are
     [time, open, close, high, low, volume, turnover]; `time` is in seconds.
+
+    We request an explicit [startAt, endAt] window sized to `limit` candles.
+    Without it KuCoin's /candles can return only a small recent slice, which
+    left the regime signal permanently "warming-up" (it needs ~200+ bars for
+    the trend EMA) and the bot never traded.
     """
+    params: dict[str, Any] = {"symbol": symbol, "type": kline_type}
+    secs = _KLINE_SECONDS.get(kline_type)
+    if secs:
+        end = int(time.time())
+        # Ask for a few extra bars to cover gaps and the partial current candle.
+        params["startAt"] = end - secs * (limit + 5)
+        params["endAt"] = end
     try:
-        response = await _get_client().get(
-            "/api/v1/market/candles", params={"symbol": symbol, "type": kline_type}
-        )
+        response = await _get_client().get("/api/v1/market/candles", params=params)
     except httpx.HTTPError as exc:
         raise KucoinError("could not reach KuCoin") from exc
     rows = _data_or_raise(response) or []

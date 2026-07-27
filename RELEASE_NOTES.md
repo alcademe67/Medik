@@ -70,6 +70,12 @@ Allowed under the freeze (accounting / exchange only — no strategy change):
   `regime=warming-up` the engine submits **no orders** at all. `state.remove_position`
   deletes a phantom without recording a trade.
 
+- **Stuck `regime=warming-up` → never trades.** `fetch_ohlcv` requested no time
+  range, so KuCoin returned only a small recent slice of candles — fewer than
+  the ~200 the trend EMA needs — so the regime never warmed up and no order was
+  ever placed. Fix: request an explicit `[startAt, endAt]` window sized to the
+  candle count (per-timeframe seconds table), guaranteeing enough history.
+
 ## Operating it
 
 See `LIVE_TRADING.md` for setup, the go-live steps, and the risk-control

@@ -314,6 +314,35 @@ def test_open_long_live_buys_by_funds_and_records_filled_base(monkeypatch, tmp_p
     assert pos.entry_price == pytest.approx(100.0)         # actual fill price
 
 
+# ------------------------------------------------------ candle history fetch
+def test_fetch_ohlcv_requests_time_window_and_returns_enough(monkeypatch):
+    # The regime signal needs ~200+ bars; without an explicit time window KuCoin
+    # can return only a small recent slice -> permanent "warming-up". Assert the
+    # fetch asks for a [startAt, endAt] window and returns the requested count.
+    captured = {}
+
+    def rows(n):  # KuCoin: newest-first [time, open, close, high, low, vol, turnover]
+        base = 1_700_000_000
+        return [[str(base - i * 300), "100", "101", "102", "99", "10", "0"] for i in range(n)]
+
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"code": "200000", "data": rows(500)}
+
+    class FakeClient:
+        async def get(self, path, params=None):
+            captured["params"] = params
+            return FakeResp()
+
+    monkeypatch.setattr(kucoin_client, "_client", FakeClient())
+    out = asyncio.run(kucoin_client.fetch_ohlcv("BTC-USDT", "5min", 400))
+    assert "startAt" in captured["params"] and "endAt" in captured["params"]
+    assert captured["params"]["endAt"] > captured["params"]["startAt"]
+    assert len(out) == 400                      # trimmed to the requested limit
+    assert set(out[0]) == {"time", "open", "close", "high", "low", "volume"}
+
+
 # ------------------------------------------------- phantom / sell reconciliation
 def test_close_long_aborts_and_removes_phantom_when_base_missing(monkeypatch, tmp_path):
     # Requirement 3: never SELL base the exchange doesn't hold. If it's missing,
