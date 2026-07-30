@@ -17,7 +17,9 @@ import logging
 import os
 import time
 
-from bot import config, execution, kucoin_client, notify, preflight, regime_signal, risk, state
+from bot import (
+    config, dashboard, execution, kucoin_client, notify, preflight, regime_signal, risk, state,
+)
 from bot.logging_setup import setup_logging
 from bot.strategy import Signal
 
@@ -256,7 +258,9 @@ class Engine:
             self._stop.set()
             return
         # Day bookkeeping + the daily summary are global — run them once a tick.
-        state.ensure_day(await self._equity())
+        equity = await self._equity()
+        state.ensure_day(equity)
+        dashboard.STATUS.set_account(balance=equity, live=self.live)
         await self._maybe_daily_summary()
         # Then evaluate each coin in the watchlist. A data error on one coin is
         # isolated here so it can't rob the other coins of their turn this tick.
@@ -292,6 +296,9 @@ class Engine:
             "PIPE %s: regime=%s signal=%s price=%.8f atr=%.8f bars=%d",
             symbol, regime, signal.value, price, atr, len(df),
         )
+        # Feed the browser dashboard this coin's latest price/regime/signal (also
+        # while warming-up, so every coin is visible). Display-only.
+        dashboard.STATUS.set_coin(symbol, price, regime, signal.value, atr)
         # Requirement: while warming-up (not enough history to classify a
         # regime) submit NOTHING — no entries and no exits. Guarantees no order
         # goes out on a HOLD/warming-up tick.
@@ -312,6 +319,12 @@ class Engine:
 
     async def run(self) -> None:
         state.init_db()
+        # Start the local browser dashboard (read-only view + STOP button) as
+        # early as possible so the page is reachable the moment the browser
+        # opens. A bind failure is logged inside and never stops trading.
+        if config.DASHBOARD_ENABLED:
+            dashboard.start_in_thread()
+
         self.live, reason = preflight.live_allowed()
 
         checks = await preflight.run_health_checks()
@@ -321,6 +334,8 @@ class Engine:
             self.live = False
             reason = "health checks failed — forced to paper mode"
             logger.warning(reason)
+        # Tell the dashboard which mode we ended up in (LIVE vs PAPER).
+        dashboard.STATUS.set_account(balance=None, live=self.live)
 
         # Reconcile recovered positions against the exchange BEFORE trading, so a
         # phantom can't trigger a SELL on the first tick.

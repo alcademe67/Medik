@@ -8,6 +8,6 @@ ccxt>=4.2
 pandas>=2.0
 numpy>=1.24
 
-# Live engine dashboard (bot/dashboard.py)
-fastapi>=0.110
-uvicorn>=0.29
+# Live engine dashboard (bot/dashboard.py) — now built on the Python standard
+# library (http.server); no extra packages needed. The engine serves it
+# automatically on http://localhost:8787.

@@ -152,6 +152,18 @@ FEE_RATE = _f("FEE_RATE", 0.001)
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 LOG_BACKUP_DAYS = _i("LOG_BACKUP_DAYS", 30)
 
+# --- Local web dashboard (bot/dashboard.py) ---
+# A browser view of the bot (balance, positions, live signals, STOP button)
+# instead of reading the terminal. The engine starts it automatically; open the
+# URL below. Bound to 127.0.0.1 (localhost) ONLY by default: it shows balances
+# and can halt the bot, so it must never be reachable from the network. Set
+# DASHBOARD_HOST=0.0.0.0 only inside an isolated container with mapped ports.
+DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_PORT = _i("DASHBOARD_PORT", 8787)
+
 
 @dataclass(frozen=True)
 class RiskParams:

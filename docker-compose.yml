@@ -27,13 +27,19 @@ services:
 
   dashboard:
     build: .
-    command: uvicorn bot.dashboard:app --host 0.0.0.0 --port 8000
+    # The dashboard is now a stdlib server (bot/dashboard.py). Run standalone
+    # here; inside this isolated container it binds 0.0.0.0 so the mapped port
+    # works. (When you run the engine directly it also hosts the dashboard
+    # in-process on localhost — no separate service needed.)
+    command: python -m bot.dashboard
     env_file: .env
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8787:8787"
     volumes:
       - ./data:/app/data
     environment:
       STATE_DB_PATH: /app/data/bot_state.sqlite3
       GOLIVE_TOKEN_PATH: /app/data/.golive_confirmed
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: "8787"

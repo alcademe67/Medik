@@ -186,9 +186,15 @@ or set `LIVE_TRADING=false`.
 pip install -r requirements.txt
 
 python -m bot.live_engine       # the trading engine (paper unless armed)
-uvicorn bot.dashboard:app --host 0.0.0.0 --port 8000   # dashboard at :8000
 python -m bot.golive            # arm live trading (interactive checklist)
 ```
+
+The engine serves a **browser dashboard** on <http://localhost:8787>
+automatically — balance, open positions with live P/L, each coin's signal, and
+a **STOP** button. On Windows just double-click `start_bot.bat`: it updates the
+code, starts the engine, and opens the dashboard for you. The dashboard is
+read-only over the trading core (its only action is the emergency STOP file) and
+binds to localhost only. To run it on its own: `python -m bot.dashboard`.
 
 The engine recovers open positions from SQLite after a restart or crash.
 

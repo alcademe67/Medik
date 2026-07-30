@@ -19,10 +19,15 @@ git pull
 echo.
 echo ============================================================
 echo   Starting the trading bot.
-echo   Watch your PHONE (ntfy) for the startup status.
-echo   To stop: double-click stop_bot.bat, or close this window.
+echo   Your DASHBOARD will open in the browser: http://localhost:8787
+echo   (If it doesn't, open that address yourself.)
+echo   To stop: click the red STOP button on the dashboard,
+echo   double-click stop_bot.bat, or close this window.
 echo ============================================================
 echo.
+REM Open the dashboard in the default browser. The page keeps retrying until
+REM the engine's built-in server is up (a second or two), so order is fine.
+start "" http://localhost:8787
 python -m bot.live_engine
 
 echo.
