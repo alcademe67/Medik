@@ -217,6 +217,24 @@ class Engine:
         logger.critical(msg)
         await notify.send(msg)
 
+    async def _announce_status(self) -> None:
+        """Push a plain-language status per coin to the phone (ntfy) and the log,
+        so the operator can see whether the bot will trade without the terminal.
+        Best-effort — a data error here never stops the engine from starting."""
+        parts = []
+        for sym in self.symbols:
+            try:
+                rows = await kucoin_client.fetch_ohlcv(sym, config.KLINE_TYPE, limit=config.REGIME_CANDLES)
+                df = regime_signal.frame_from_ohlcv(rows)
+                sig, reg = regime_signal.signal_from_frame(df)
+                word = "WARMING-UP (not trading yet)" if reg == "warming-up" else reg
+                parts.append(f"{sym}: {len(df)} candles, {word}, signal={sig.value}")
+                logger.info("STATUS %s: candles=%d regime=%s signal=%s", sym, len(df), reg, sig.value)
+            except Exception as exc:  # noqa: BLE001 - status must never block startup
+                parts.append(f"{sym}: data error")
+                logger.warning("STATUS %s: data error %s", sym, exc)
+        await notify.send("📊 Startup status — " + " | ".join(parts))
+
     async def _maybe_daily_summary(self) -> None:
         today = time.strftime("%Y-%m-%d", time.gmtime())
         if self._summary_day is None:
@@ -320,6 +338,10 @@ class Engine:
             "engine start: mode=%s symbols=[%s] reason=%s recovered=%d",
             mode, watchlist, reason, len(recovered),
         )
+
+        # Plain-language startup status — logged AND pushed to the phone (ntfy),
+        # so you can see whether it will trade without reading the terminal.
+        await self._announce_status()
 
         try:
             while not self._stop.is_set():
