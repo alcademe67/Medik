@@ -90,6 +90,13 @@ TRADE_SYMBOLS = _parse_symbols(os.getenv("TRADE_SYMBOLS", ""), DEFAULT_SYMBOLS)
 # Quote-currency amount spent per BUY (e.g. 5 = spend 5 USDT). Keep small.
 TRADE_FUNDS_PER_ORDER = os.getenv("TRADE_FUNDS_PER_ORDER", "5")
 TRADE_INTERVAL_SECONDS = float(os.getenv("TRADE_INTERVAL_SECONDS", "60"))
+# Signal mode for the live engine:
+#   "regime"   — careful: trades only genuine setups (can hold for hours)
+#   "momentum" — aggressive: buys any coin in a short-term uptrend (fast EMA >
+#                slow EMA), rides until the trend breaks or the stop/target hits.
+#                Trades far more often — and with no proven edge, tends to lose
+#                faster on fees + whipsaw. Chosen deliberately.
+TRADE_MODE = os.getenv("TRADE_MODE", "momentum").strip().lower()
 KLINE_TYPE = os.getenv("KLINE_TYPE", "5min")  # candle size fed to the strategy
 FAST_MA = int(os.getenv("FAST_MA", "9"))
 SLOW_MA = int(os.getenv("SLOW_MA", "21"))

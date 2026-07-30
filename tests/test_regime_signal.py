@@ -58,17 +58,33 @@ def _patch_regime(monkeypatch, *, entry_last, exit_last, regime="bull"):
 
 def test_entry_on_last_bar_maps_to_buy(monkeypatch):
     _patch_regime(monkeypatch, entry_last=True, exit_last=False, regime="bull")
-    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5))
+    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5), mode="regime")
     assert sig == Signal.BUY and reg == "bull"
 
 
 def test_exit_on_last_bar_maps_to_sell(monkeypatch):
     _patch_regime(monkeypatch, entry_last=False, exit_last=True, regime="sideways")
-    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5))
+    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5), mode="regime")
     assert sig == Signal.SELL and reg == "sideways"
 
 
 def test_neither_maps_to_hold(monkeypatch):
     _patch_regime(monkeypatch, entry_last=False, exit_last=False, regime="bear")
-    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5))
+    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5), mode="regime")
     assert sig == Signal.HOLD and reg == "bear"
+
+
+def test_momentum_mode_buys_uptrend_sells_downtrend():
+    # Aggressive momentum: fast EMA above slow (uptrend) -> BUY; below -> SELL.
+    up = _frame(80)                                   # linspace 100->110 = uptrend
+    sig, reg = regime_signal.signal_from_frame(up, StrategyParams(), mode="momentum")
+    assert sig == Signal.BUY and reg == "momentum-up"
+
+    idx = pd.date_range("2024-01-01", periods=80, freq="h", tz="UTC")
+    price = np.linspace(110, 100, 80)                 # downtrend
+    down = pd.DataFrame(
+        {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000.0},
+        index=idx,
+    )
+    sig2, reg2 = regime_signal.signal_from_frame(down, StrategyParams(), mode="momentum")
+    assert sig2 == Signal.SELL and reg2 == "momentum-down"

@@ -24,8 +24,9 @@ import logging
 
 import pandas as pd
 
+from bot import config
 from bot.strategy import Signal
-from trading import strategy as research
+from trading import indicators, strategy as research
 from trading.config import DEFAULT_PARAMS, StrategyParams
 
 logger = logging.getLogger(__name__)
@@ -67,17 +68,35 @@ def min_bars(params: StrategyParams = DEFAULT_PARAMS) -> int:
     ) + 5
 
 
-def signal_from_frame(
-    df: pd.DataFrame, params: StrategyParams = DEFAULT_PARAMS
-) -> tuple[Signal, str]:
-    """Map the latest bar of the regime framework to a (Signal, regime) pair.
+def _momentum_signal(df: pd.DataFrame, params: StrategyParams) -> tuple[Signal, str]:
+    """Aggressive mode: BUY while a coin is in a short-term uptrend (fast EMA >
+    slow EMA), SELL when the trend breaks. Fires on the CURRENT state (not a
+    rare cross), so the engine enters uptrending coins right away and rides them
+    until the trend flips or the stop/target closes them. Trades far more than
+    the regime strategy — and takes weaker setups, so it loses more on
+    fees/whipsaw. The ATR stop and profit target still cap every trade."""
+    out = indicators.add_indicators(df, params)
+    fast = float(out["ema_fast"].iloc[-1])
+    slow = float(out["ema_slow"].iloc[-1])
+    if fast > slow:
+        return Signal.BUY, "momentum-up"
+    return Signal.SELL, "momentum-down"
 
-    entry on the last bar -> BUY; else exit on the last bar -> SELL; else HOLD.
-    Needs `min_bars` of history for the indicators to be valid; until then it
-    returns (HOLD, "warming-up").
+
+def signal_from_frame(
+    df: pd.DataFrame, params: StrategyParams = DEFAULT_PARAMS, mode: str | None = None
+) -> tuple[Signal, str]:
+    """Map the latest bar to a (Signal, regime) pair.
+
+    mode "regime" (careful) uses the regime framework; mode "momentum"
+    (aggressive) rides uptrends. Defaults to config.TRADE_MODE. Needs `min_bars`
+    of history for the indicators to be valid; until then returns
+    (HOLD, "warming-up").
     """
     if len(df) < min_bars(params):
         return Signal.HOLD, "warming-up"
+    if (mode or config.TRADE_MODE) == "momentum":
+        return _momentum_signal(df, params)
     out = research.regime_signals(df, params)
     regime = str(out["regime"].iloc[-1])
     if bool(out["entry"].iloc[-1]):
