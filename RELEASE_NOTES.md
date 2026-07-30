@@ -74,7 +74,17 @@ Allowed under the freeze (accounting / exchange only — no strategy change):
   range, so KuCoin returned only a small recent slice of candles — fewer than
   the ~200 the trend EMA needs — so the regime never warmed up and no order was
   ever placed. Fix: request an explicit `[startAt, endAt]` window sized to the
-  candle count (per-timeframe seconds table), guaranteeing enough history.
+  candle count (per-timeframe seconds table), guaranteeing enough history. Also
+  lowered the warm-up threshold (`regime_signal.min_bars`, ~55 bars) to what the
+  indicators actually need rather than the full trend-EMA period, so a short
+  candle history can no longer strand the bot in warming-up forever.
+
+## Running the bot (Windows, no typing)
+
+Double-click **`start_bot.bat`** in the `Medik` folder — it updates and starts
+the bot. Double-click **`stop_bot.bat`** to halt it. A startup status (candles /
+regime / signal per coin) is pushed to your phone via ntfy so you can see
+whether it will trade without reading the terminal.
 
 ## Operating it
 

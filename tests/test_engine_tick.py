@@ -138,7 +138,7 @@ def test_no_order_submitted_while_warming_up(tmp_path, monkeypatch):
     state.add_position(state.Position("BTC-USDT", "buy", 0.01, 100, 96, 99, 0.0, "o"))
 
     async def fake_ohlcv(_s, _k, limit=400):
-        return _ohlcv(60)     # 60 bars < 202 -> regime is "warming-up"
+        return _ohlcv(30)     # 30 bars < min_bars -> regime is "warming-up"
 
     async def fake_balance(_c, account_type="trade"):
         return 1000.0

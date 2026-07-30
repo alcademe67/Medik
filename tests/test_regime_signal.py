@@ -58,17 +58,17 @@ def _patch_regime(monkeypatch, *, entry_last, exit_last, regime="bull"):
 
 def test_entry_on_last_bar_maps_to_buy(monkeypatch):
     _patch_regime(monkeypatch, entry_last=True, exit_last=False, regime="bull")
-    sig, reg = regime_signal.signal_from_frame(_frame(10), StrategyParams(ema_trend=5))
+    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5))
     assert sig == Signal.BUY and reg == "bull"
 
 
 def test_exit_on_last_bar_maps_to_sell(monkeypatch):
     _patch_regime(monkeypatch, entry_last=False, exit_last=True, regime="sideways")
-    sig, reg = regime_signal.signal_from_frame(_frame(10), StrategyParams(ema_trend=5))
+    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5))
     assert sig == Signal.SELL and reg == "sideways"
 
 
 def test_neither_maps_to_hold(monkeypatch):
     _patch_regime(monkeypatch, entry_last=False, exit_last=False, regime="bear")
-    sig, reg = regime_signal.signal_from_frame(_frame(10), StrategyParams(ema_trend=5))
+    sig, reg = regime_signal.signal_from_frame(_frame(60), StrategyParams(ema_trend=5))
     assert sig == Signal.HOLD and reg == "bear"

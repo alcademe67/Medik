@@ -19,13 +19,13 @@ from trading.config import DEFAULT_PARAMS
 
 
 async def _run() -> None:
-    need = DEFAULT_PARAMS.ema_trend + 2
+    need = regime_signal.min_bars(DEFAULT_PARAMS)
     print("\n=== Bot diagnostic (read-only — places no orders) ===\n")
     allowed, reason = preflight.live_allowed()
     print(f"Live gate      : {'OPEN' if allowed else 'CLOSED'} — {reason}")
     print(f"KLINE_TYPE     : {config.KLINE_TYPE}")
     print(f"REGIME_CANDLES : {config.REGIME_CANDLES}")
-    print(f"EMA_TREND      : {DEFAULT_PARAMS.ema_trend}  (need >= {need} candles to leave warming-up)")
+    print(f"Min candles    : {need} to leave warming-up (trend EMA {DEFAULT_PARAMS.ema_trend} keeps improving past that)")
     print(f"Watchlist      : {', '.join(config.TRADE_SYMBOLS)}\n")
 
     for sym in config.TRADE_SYMBOLS:

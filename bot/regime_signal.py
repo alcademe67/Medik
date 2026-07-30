@@ -49,16 +49,34 @@ def frame_from_ohlcv(rows: list[dict]) -> pd.DataFrame:
     return df[_OHLCV_COLS]
 
 
+def min_bars(params: StrategyParams = DEFAULT_PARAMS) -> int:
+    """Minimum candles before the regime signal is trusted (leaves warming-up).
+
+    Enough for the rolling windows (Bollinger, volume, breakout) and ADX to
+    settle. The trend EMA keeps improving with more history, but it is usable
+    well before its full period — so we do NOT wait for the whole 200 bars.
+    Requiring that made the bot hang in "warming-up" forever whenever the
+    exchange returned fewer candles, so it never traded.
+    """
+    return max(
+        params.ema_slow,
+        params.bb_period,
+        params.breakout_lookback,
+        params.adx_period * 2,
+        params.volume_ma,
+    ) + 5
+
+
 def signal_from_frame(
     df: pd.DataFrame, params: StrategyParams = DEFAULT_PARAMS
 ) -> tuple[Signal, str]:
     """Map the latest bar of the regime framework to a (Signal, regime) pair.
 
     entry on the last bar -> BUY; else exit on the last bar -> SELL; else HOLD.
-    Needs enough history to warm up the trend EMA (default 200) before the
-    regime label is trustworthy; until then it returns (HOLD, "warming-up").
+    Needs `min_bars` of history for the indicators to be valid; until then it
+    returns (HOLD, "warming-up").
     """
-    if len(df) < params.ema_trend + 2:
+    if len(df) < min_bars(params):
         return Signal.HOLD, "warming-up"
     out = research.regime_signals(df, params)
     regime = str(out["regime"].iloc[-1])
