@@ -163,6 +163,12 @@ DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").strip().lower() in {
 }
 DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 DASHBOARD_PORT = _i("DASHBOARD_PORT", 8787)
+# Auto-open the dashboard in the default browser when the engine starts, so the
+# operator never has to type a web address. On by default (for the desktop
+# launcher); set DASHBOARD_OPEN_BROWSER=false for headless / container runs.
+DASHBOARD_OPEN_BROWSER = os.getenv("DASHBOARD_OPEN_BROWSER", "true").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 
 @dataclass(frozen=True)

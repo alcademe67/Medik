@@ -30,6 +30,7 @@ import logging
 import os
 import threading
 import time
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from bot import config, state
@@ -224,6 +225,35 @@ def _make_server(host: str | None = None, port: int | None = None) -> ThreadingH
         return None
 
 
+def _browser_url(host, port) -> str:
+    """The address to open in a browser. A server bound to 0.0.0.0 / 127.0.0.1 is
+    reached as `localhost` from the same machine."""
+    host = str(host)
+    friendly = "localhost" if host in ("", "0.0.0.0", "127.0.0.1") else host
+    return f"http://{friendly}:{port}"
+
+
+def _maybe_open_browser(host, port, delay: float = 2.0) -> None:
+    """Open the dashboard in the default browser a couple of seconds after the
+    server binds — so the operator never has to type an address, and the first
+    request can't beat the server to a 'connection refused' page. Disabled for
+    headless/container runs via DASHBOARD_OPEN_BROWSER. Best-effort: a browser
+    that won't open is only a convenience lost, never an error."""
+    if not config.DASHBOARD_OPEN_BROWSER:
+        return
+    url = _browser_url(host, port)
+
+    def _go() -> None:
+        time.sleep(delay)
+        try:
+            webbrowser.open(url)
+            logger.info("dashboard: opened %s in your browser", url)
+        except Exception as exc:  # noqa: BLE001 - never let this bubble into the engine
+            logger.debug("dashboard: could not open a browser (%s)", exc)
+
+    threading.Thread(target=_go, name="dashboard-open", daemon=True).start()
+
+
 def start_in_thread(host: str | None = None, port: int | None = None):
     """Start the dashboard HTTP server in a daemon thread. Returns the server, or
     None if the port can't be bound — trading must never fail because the
@@ -232,7 +262,9 @@ def start_in_thread(host: str | None = None, port: int | None = None):
     if server is None:
         return None
     threading.Thread(target=server.serve_forever, name="dashboard", daemon=True).start()
-    logger.info("dashboard: open http://%s:%s in your browser", *server.server_address)
+    bound_host, bound_port = server.server_address
+    logger.info("dashboard READY — open %s in your browser", _browser_url(bound_host, bound_port))
+    _maybe_open_browser(bound_host, bound_port)
     return server
 
 
@@ -252,7 +284,9 @@ def main() -> None:
     server = _make_server()
     if server is None:
         raise SystemExit(1)
-    logger.info("dashboard: serving on http://%s:%s (standalone)", *server.server_address)
+    bound_host, bound_port = server.server_address
+    logger.info("dashboard: serving on %s (standalone)", _browser_url(bound_host, bound_port))
+    _maybe_open_browser(bound_host, bound_port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -19,15 +19,17 @@ git pull
 echo.
 echo ============================================================
 echo   Starting the trading bot.
-echo   Your DASHBOARD will open in the browser: http://localhost:8787
-echo   (If it doesn't, open that address yourself.)
+echo   Your DASHBOARD opens in your browser AUTOMATICALLY in a few
+echo   seconds - you do not need to type anything.
+echo   If it doesn't open, start Chrome/Edge and go to this address:
+echo         http://localhost:8787
 echo   To stop: click the red STOP button on the dashboard,
 echo   double-click stop_bot.bat, or close this window.
 echo ============================================================
 echo.
-REM Open the dashboard in the default browser. The page keeps retrying until
-REM the engine's built-in server is up (a second or two), so order is fine.
-start "" http://localhost:8787
+REM The engine opens the dashboard in the browser itself, right after its
+REM built-in web server is ready (see bot/dashboard.py _maybe_open_browser),
+REM so there is no early 'connection refused' race.
 python -m bot.live_engine
 
 echo.

@@ -87,6 +87,25 @@ def test_build_state_empty_db_is_safe(tmp_path):
     assert s["stop_active"] is False
 
 
+def test_browser_url_maps_localhost_and_wildcard():
+    # A server bound to 0.0.0.0 or 127.0.0.1 is opened as localhost in the
+    # browser; a real hostname passes through unchanged.
+    assert dashboard._browser_url("127.0.0.1", 8787) == "http://localhost:8787"
+    assert dashboard._browser_url("0.0.0.0", 8787) == "http://localhost:8787"
+    assert dashboard._browser_url("mybox.lan", 9000) == "http://mybox.lan:9000"
+
+
+def test_maybe_open_browser_respects_the_disable_flag(monkeypatch):
+    # With DASHBOARD_OPEN_BROWSER off, no browser thread is spawned at all.
+    calls = []
+    monkeypatch.setattr(config, "DASHBOARD_OPEN_BROWSER", False)
+    monkeypatch.setattr(dashboard.webbrowser, "open", lambda *_a, **_k: calls.append(1))
+    dashboard._maybe_open_browser("127.0.0.1", 8787, delay=0)
+    import time as _t
+    _t.sleep(0.05)
+    assert calls == []
+
+
 def test_request_stop_writes_the_brake_file_and_state_reflects_it(tmp_path):
     stop = str(tmp_path / "STOP")
     db = str(tmp_path / "s.sqlite3")

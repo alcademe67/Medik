@@ -19,6 +19,7 @@ services:
     environment:
       STATE_DB_PATH: /app/data/bot_state.sqlite3
       GOLIVE_TOKEN_PATH: /app/data/.golive_confirmed
+      DASHBOARD_ENABLED: "false"   # the separate dashboard service below serves the UI
     healthcheck:
       test: ["CMD", "python", "-c", "import bot.config"]
       interval: 1m
@@ -43,3 +44,4 @@ services:
       GOLIVE_TOKEN_PATH: /app/data/.golive_confirmed
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PORT: "8787"
+      DASHBOARD_OPEN_BROWSER: "false"   # headless container — no browser to open
