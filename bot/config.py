@@ -56,24 +56,34 @@ LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() in {
 }
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "BTC-USDT")
 
+# Default watchlist when TRADE_SYMBOLS is not set in .env — a handful of liquid
+# majors, so out of the box the bot has several coins to find a setup on
+# (rather than just one quiet market).
+DEFAULT_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT"]
 
-def _parse_symbols(raw: str, fallback: str) -> list[str]:
+
+def _parse_symbols(raw: str, fallback) -> list[str]:
     """Parse a TRADE_SYMBOLS value into an ordered, de-duplicated list.
 
     Accepts commas and/or whitespace as separators ("BTC-USDT, ETH-USDT").
-    Falls back to the single `fallback` symbol when nothing is configured.
+    Falls back to `fallback` (a symbol string, or a list of symbols) when
+    nothing is configured.
     """
     syms = list(dict.fromkeys(s.upper() for s in raw.replace(",", " ").split()))
-    return syms or [fallback.upper()]
+    if syms:
+        return syms
+    if isinstance(fallback, (list, tuple)):
+        return [s.upper() for s in fallback]
+    return [fallback.upper()]
 
 
 # Watchlist: the live engine trades EACH of these coins, not just one, giving
 # more opportunities than a single symbol. Comma/space separated in .env, e.g.
 #   TRADE_SYMBOLS=BTC-USDT, ETH-USDT, SOL-USDT
-# Unset -> just TRADE_SYMBOL (backwards compatible). Every coin shares the SAME
+# Unset -> DEFAULT_SYMBOLS (a few liquid majors). Every coin shares the SAME
 # global risk caps (max open positions, daily loss limit, daily order cap), so
 # widening the list adds breadth without loosening any safety limit.
-TRADE_SYMBOLS = _parse_symbols(os.getenv("TRADE_SYMBOLS", ""), TRADE_SYMBOL)
+TRADE_SYMBOLS = _parse_symbols(os.getenv("TRADE_SYMBOLS", ""), DEFAULT_SYMBOLS)
 # Quote-currency amount spent per BUY (e.g. 5 = spend 5 USDT). Keep small.
 TRADE_FUNDS_PER_ORDER = os.getenv("TRADE_FUNDS_PER_ORDER", "5")
 TRADE_INTERVAL_SECONDS = float(os.getenv("TRADE_INTERVAL_SECONDS", "60"))

@@ -36,6 +36,9 @@ def test_parse_symbols_dedupes_uppercases_and_falls_back():
     assert _parse_symbols("btc-usdt, BTC-USDT", "X-USDT") == ["BTC-USDT"]
     # Empty -> the single fallback symbol (also uppercased).
     assert _parse_symbols("   ", "doge-usdt") == ["DOGE-USDT"]
+    # Empty with a LIST fallback -> the whole list (uppercased); explicit wins.
+    assert _parse_symbols("", ["btc-usdt", "eth-usdt"]) == ["BTC-USDT", "ETH-USDT"]
+    assert _parse_symbols("SOL-USDT", ["btc-usdt"]) == ["SOL-USDT"]
 
 
 def test_engine_tick_runs_without_await_typeerror(tmp_path, monkeypatch):
