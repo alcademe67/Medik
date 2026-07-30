@@ -97,7 +97,9 @@ TRADE_INTERVAL_SECONDS = float(os.getenv("TRADE_INTERVAL_SECONDS", "60"))
 #                Trades far more often — and with no proven edge, tends to lose
 #                faster on fees + whipsaw. Chosen deliberately.
 TRADE_MODE = os.getenv("TRADE_MODE", "momentum").strip().lower()
-KLINE_TYPE = os.getenv("KLINE_TYPE", "5min")  # candle size fed to the strategy
+# Candle size fed to the strategy. 1min = fast/reactive (jumps on bounces sooner,
+# more trades + more fees); 5min/15min = slower/steadier.
+KLINE_TYPE = os.getenv("KLINE_TYPE", "1min").strip()
 FAST_MA = int(os.getenv("FAST_MA", "9"))
 SLOW_MA = int(os.getenv("SLOW_MA", "21"))
 # Candles pulled per tick for the regime signal. Must comfortably exceed the

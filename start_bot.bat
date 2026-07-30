@@ -6,6 +6,11 @@ cd /d "%~dp0"
 REM Clear any leftover emergency-STOP file so the bot can start.
 if exist STOP del STOP
 
+REM Force the fast/aggressive settings regardless of what .env says.
+REM (python-dotenv does not override variables already set in the environment.)
+set "KLINE_TYPE=1min"
+set "TRADE_MODE=momentum"
+
 echo ============================================================
 echo   Updating the bot (git pull)...
 echo ============================================================
