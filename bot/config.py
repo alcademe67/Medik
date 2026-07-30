@@ -56,10 +56,13 @@ LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() in {
 }
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "BTC-USDT")
 
-# Default watchlist when TRADE_SYMBOLS is not set in .env — a handful of liquid
-# majors, so out of the box the bot has several coins to find a setup on
-# (rather than just one quiet market).
-DEFAULT_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT"]
+# Default watchlist when TRADE_SYMBOLS is not set in .env — liquid majors, so
+# out of the box the bot has several coins to find a setup on (rather than one
+# quiet market). All KuCoin USDT pairs, deep liquidity, small minimum orders.
+DEFAULT_SYMBOLS = [
+    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "LINK-USDT",
+    "DOGE-USDT", "AVAX-USDT", "DOT-USDT", "LTC-USDT", "ATOM-USDT",
+]
 
 
 def _parse_symbols(raw: str, fallback) -> list[str]:
