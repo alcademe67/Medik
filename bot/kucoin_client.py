@@ -286,6 +286,10 @@ async def get_symbol_info(symbol: str) -> dict[str, Any]:
                 "quote_min_size": float(m.get("quoteMinSize") or 0),
                 "base_increment": float(m.get("baseIncrement") or 0),
                 "price_increment": float(m.get("priceIncrement") or 0),
+                # Smallest step for a market-buy `funds` amount. A funds value with
+                # more precision than this is rejected with 400100 "Funds increment
+                # invalid", so execution.py floors `funds` to this step.
+                "quote_increment": float(m.get("quoteIncrement") or 0),
                 "enable_trading": bool(m.get("enableTrading", False)),
             }
     raise NotFoundError(symbol)

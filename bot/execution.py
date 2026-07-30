@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from decimal import ROUND_DOWN, Decimal
 
 from bot import config, kucoin_client, state
 
@@ -50,6 +51,25 @@ def _round_down(value: float, increment: float) -> float:
     return value
 
 
+def _fmt_amount(value: float, increment: float) -> str:
+    """Floor `value` to a whole multiple of `increment` and return it as a clean
+    fixed-point string (no float artifacts, no scientific notation).
+
+    KuCoin rejects an order field whose precision exceeds the symbol's step —
+    a base `size` finer than baseIncrement or a `funds` finer than quoteIncrement
+    both come back as 400100 "…increment invalid". Rounding a float with plain
+    arithmetic (``int(v/inc)*inc``) reintroduces binary-float noise like
+    ``8.288999999999999``; formatting through Decimal avoids that. With
+    ``increment <= 0`` (unknown) the value is passed through unrounded.
+    """
+    d = Decimal(str(value))
+    if increment and increment > 0:
+        step = Decimal(str(increment))
+        d = (d / step).to_integral_value(rounding=ROUND_DOWN) * step
+        d = d.quantize(step)
+    return format(d, "f")
+
+
 def _fee_in_quote(fee: float, fee_currency: str, avg_price: float, symbol: str) -> float:
     """Value a fill fee in the QUOTE currency (e.g. USDT) so it can be
     subtracted from a quote-denominated P/L.
@@ -73,6 +93,36 @@ def _fee_in_quote(fee: float, fee_currency: str, avg_price: float, symbol: str) 
     return 0.0
 
 
+# A market order's response can return before KuCoin has recorded its fills, so
+# /api/v1/fills briefly reports 0 filled. Re-query a few times before giving up.
+_FILL_RETRY_ATTEMPTS = 5
+_FILL_RETRY_DELAY_S = 0.6
+
+
+async def _fetch_fills_with_retry(order_id: str, symbol: str, action: str) -> dict | None:
+    """Poll get_order_fills until it reports a fill, or attempts run out.
+
+    Returns the fills dict (possibly still all-zero on the last try) or None if
+    every attempt raised. Never raises — the order already executed, so a
+    fills-lookup problem must not crash the trade path.
+    """
+    f = None
+    for attempt in range(1, _FILL_RETRY_ATTEMPTS + 1):
+        try:
+            f = await kucoin_client.get_order_fills(order_id)
+        except kucoin_client.KucoinError as exc:
+            logger.warning(
+                "FILL %s %s: could not fetch fills for order %s (attempt %d/%d): %s",
+                action, symbol, order_id, attempt, _FILL_RETRY_ATTEMPTS, exc,
+            )
+            f = None
+        if f and float(f["filled_size"]) > 0:
+            return f
+        if attempt < _FILL_RETRY_ATTEMPTS:
+            await asyncio.sleep(_FILL_RETRY_DELAY_S)
+    return f
+
+
 async def _settle_fees(result: dict, symbol: str, action: str, notional_estimate: float) -> dict:
     """Return {fee, filled_size, avg_price} for an order and log the fill.
 
@@ -93,11 +143,16 @@ async def _settle_fees(result: dict, symbol: str, action: str, notional_estimate
     if not order_id:
         logger.warning("FILL %s %s: live order returned no orderId, cannot fetch fills", action, symbol)
         return {"fee": 0.0, "filled_size": 0.0, "avg_price": 0.0}
-    try:
-        f = await kucoin_client.get_order_fills(order_id)
-    except kucoin_client.KucoinError as exc:
-        logger.warning("FILL %s %s: could not fetch fills for order %s: %s", action, symbol, order_id, exc)
+    f = await _fetch_fills_with_retry(order_id, symbol, action)
+    if not f:
+        logger.warning("FILL %s %s: no fills returned for order %s after retries", action, symbol, order_id)
         return {"fee": 0.0, "filled_size": 0.0, "avg_price": 0.0}
+    if float(f["filled_size"]) <= 0:
+        logger.warning(
+            "FILL %s %s: order %s still shows 0 fills after %d attempts — falling back "
+            "to intended size (the SELL sizes off the real balance, so this is safe)",
+            action, symbol, order_id, _FILL_RETRY_ATTEMPTS,
+        )
     fee_quote = _fee_in_quote(float(f["fee"]), f["fee_currency"], float(f["avg_price"]), symbol)
     logger.info(
         "FILL %s %s size=%.8f avg_price=%.8f fee=%.8f %s (=%.8f %s) fills=%d orderId=%s",
@@ -176,23 +231,27 @@ async def open_long(
     stored on the position so it can be deducted from the NET P/L at close.
     """
     size = await validate_buy(symbol, size, ref_price, live=live)
+    info = await kucoin_client.get_symbol_info(symbol)
     await _respect_rate_limit()
     # Place the BUY by FUNDS (quote to spend), NOT by base size. A market buy
     # specified by base size makes KuCoin reserve funds against the order book
     # and can overrun the balance (error 200004). A funds order spends at most
     # the amount we name, so it can never cost more than we have. funds = the
-    # sized notional, which already sits inside the cash buffer.
-    funds = round(size * ref_price, 4)
+    # sized notional, which already sits inside the cash buffer — floored to the
+    # symbol's quoteIncrement so KuCoin doesn't reject it with 400100 "Funds
+    # increment invalid" (e.g. 8.2895 when the step is 0.001).
+    funds = _fmt_amount(size * ref_price, info["quote_increment"])
     result = await kucoin_client.place_market_order(symbol, "buy", funds=funds)
-    settle = await _settle_fees(result, symbol, "BUY", funds)
+    settle = await _settle_fees(result, symbol, "BUY", float(funds))
     entry_fee = settle["fee"]
 
     # Record the base we ACTUALLY hold so the later SELL offloads exactly that.
     # Live: from the fills, conservatively reduced by one taker fee and floored
     # to the lot size, so we never try to sell more base than we own (KuCoin
-    # deducts the buy fee from the coin received). Paper: the intended size.
+    # deducts the buy fee from the coin received). Paper, or live with fills not
+    # yet visible: the intended size (close_long re-sizes the SELL against the
+    # real exchange balance, so an over-recorded size can never oversell).
     if result.get("dryRun") is False and settle["filled_size"] > 0:
-        info = await kucoin_client.get_symbol_info(symbol)
         held = settle["filled_size"] * (1 - config.FEE_RATE)
         base_size = _round_down(held, info["base_increment"])
         entry_price = settle["avg_price"] or ref_price
@@ -208,7 +267,7 @@ async def open_long(
     )
     pos_id = state.add_position(pos)
     logger.info(
-        "OPEN %s funds=%.6f %s filled=%.8f base_held=%.8f entry=%.6f stop=%.6f "
+        "OPEN %s funds=%s %s filled=%.8f base_held=%.8f entry=%.6f stop=%.6f "
         "target=%.6f entry_fee=%.6f %s live=%s",
         symbol, funds, config.QUOTE_CURRENCY, settle["filled_size"], base_size,
         entry_price, stop, target, entry_fee, config.QUOTE_CURRENCY, not result.get("dryRun"),
@@ -222,32 +281,42 @@ async def close_long(position: state.Position, exit_price: float, reason: str) -
     NET = gross price move − entry fee (paid at open) − exit fee (settled here).
     The gross figure, total fee, and net are all logged.
     """
-    # Never submit a SELL unless the exchange confirms it holds the base asset
-    # (defends against a phantom position mid-run — e.g. coin withdrawn/sold
-    # outside the bot). Live only; paper positions are simulated.
+    # SELL exactly the base we can actually offload. Live: query the real trade
+    # balance and sell min(recorded size, held), floored to the lot size — so a
+    # size recorded a hair high (the buy fee is taken in base) never triggers a
+    # 200004 oversell, and a genuinely-missing position (coin withdrawn/sold
+    # outside the bot) is dropped without a doomed SELL. Paper: the recorded size.
+    sell_size = position.size
+    sell_arg: str | float = position.size  # what we hand to the exchange
     if config.LIVE_TRADING:
         base = position.symbol.split("-")[0]
         try:
             held = await kucoin_client.get_available_balance(base, "trade")
+            info = await kucoin_client.get_symbol_info(position.symbol)
         except kucoin_client.KucoinError as exc:
             logger.warning(
                 "CLOSE %s: could not verify %s balance (%s) — skipping sell this tick",
                 position.symbol, base, exc,
             )
             return 0.0, {"aborted": True}
-        if held < position.size * 0.999:
+        sell_size = _round_down(min(position.size, held), info["base_increment"])
+        # Nothing meaningful left to sell (dust, phantom, or below the exchange
+        # minimum): drop the position, book no P/L, send no order.
+        if sell_size <= 0 or sell_size < info["base_min_size"]:
             state.remove_position(position.id)
             logger.warning(
-                "CLOSE %s: exchange holds only %.8f %s (need %.8f) — removed phantom "
-                "position id=%s, NO sell sent",
-                position.symbol, held, base, position.size, position.id,
+                "CLOSE %s: exchange holds only %.8f %s (recorded %.8f, min %.8f) — "
+                "removed position id=%s, NO sell sent",
+                position.symbol, held, base, position.size, info["base_min_size"], position.id,
             )
             return 0.0, {"phantom": True}
+        # Clean decimal string at the lot's precision (avoids 400100 on the SELL).
+        sell_arg = _fmt_amount(sell_size, info["base_increment"])
 
     await _respect_rate_limit()
-    # SELL stays base-size (offload exactly the base we hold from the buy).
-    result = await kucoin_client.place_market_order(position.symbol, "sell", size=position.size)
-    exit_fee = (await _settle_fees(result, position.symbol, "SELL", position.size * exit_price))["fee"]
+    # SELL by base size (offload exactly the base we confirmed we hold).
+    result = await kucoin_client.place_market_order(position.symbol, "sell", size=sell_arg)
+    exit_fee = (await _settle_fees(result, position.symbol, "SELL", sell_size * exit_price))["fee"]
     net = state.close_position(
         position.id, exit_price, reason,
         entry_fee=position.entry_fee, exit_fee=exit_fee,

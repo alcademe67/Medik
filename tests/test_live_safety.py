@@ -160,7 +160,8 @@ def test_orders_today_counts_open_and_closed_entries(tmp_path):
 # ---------------------------------------------------- pre-trade validation
 def _symbol_info(**over):
     base = dict(symbol="BTC-USDT", base_min_size=0.001, quote_min_size=0.1,
-                base_increment=0.0001, price_increment=0.01, enable_trading=True)
+                base_increment=0.0001, price_increment=0.01,
+                quote_increment=0.000001, enable_trading=True)
     base.update(over)
     return base
 
@@ -265,9 +266,29 @@ def test_settle_fees_live_best_effort_zero_on_error(monkeypatch):
     async def boom(_oid):
         raise kucoin_client.KucoinError("fills endpoint down")
     monkeypatch.setattr(kucoin_client, "get_order_fills", boom)
+    monkeypatch.setattr(execution, "_FILL_RETRY_DELAY_S", 0)   # no backoff sleeps in the test
     # The order already executed; a fills-lookup failure must NOT raise -> fee 0.
+    # (Every retry raises, so it exhausts the attempts and returns zeros.)
     settle = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "x"}, "BTC-USDT", "SELL", 100.0))
     assert settle["fee"] == 0.0
+
+
+def test_settle_fees_retries_until_fills_appear(monkeypatch):
+    # A market order's response can beat its fills into KuCoin's system, so the
+    # first /fills read returns 0 filled. _settle_fees must retry, not record a
+    # zero fill (which would drop the entry fee and mis-size the position).
+    calls = {"n": 0}
+    async def fills(_oid):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return {"filled_size": 0.0, "avg_price": 0.0, "fee": 0.0, "fee_currency": "", "fills": 0}
+        return {"filled_size": 0.02, "avg_price": 100.0, "fee": 0.002, "fee_currency": "USDT", "fills": 1}
+    monkeypatch.setattr(kucoin_client, "get_order_fills", fills)
+    monkeypatch.setattr(execution, "_FILL_RETRY_DELAY_S", 0)
+    settle = asyncio.run(execution._settle_fees({"dryRun": False, "orderId": "o"}, "BTC-USDT", "BUY", 2.0))
+    assert calls["n"] == 3                              # retried past the empty reads
+    assert settle["filled_size"] == pytest.approx(0.02)
+    assert settle["fee"] == pytest.approx(0.002)        # real fee, not 0
 
 
 def test_settle_fees_converts_base_currency_fee_to_quote(monkeypatch):
@@ -307,11 +328,60 @@ def test_open_long_live_buys_by_funds_and_records_filled_base(monkeypatch, tmp_p
     monkeypatch.setattr(kucoin_client, "get_order_fills", fills)
 
     asyncio.run(execution.open_long("BTC-USDT", 0.02, 100.0, 96.0, 108.0, live=True))
-    # placed by funds (=0.02*100), NOT by base size
-    assert captured["funds"] == pytest.approx(2.0) and captured["size"] is None
+    # placed by funds (=0.02*100), NOT by base size. funds is a clean decimal
+    # string floored to the quote increment (see _fmt_amount).
+    assert float(captured["funds"]) == pytest.approx(2.0) and captured["size"] is None
     pos = state.open_positions()[0]
     assert pos.size == pytest.approx(0.02 * (1 - 0.001))   # filled net of fee
     assert pos.entry_price == pytest.approx(100.0)         # actual fill price
+
+
+def test_fmt_amount_floors_to_increment():
+    # Floors to a multiple of the step and returns a clean fixed-point string
+    # (no binary-float artifacts, no scientific notation) — KuCoin rejects an
+    # amount finer than the symbol's increment with 400100.
+    assert execution._fmt_amount(8.2895, 0.001) == "8.289"     # SOL 400100 case
+    assert execution._fmt_amount(2.0, 0.000001) == "2.000000"
+    assert execution._fmt_amount(66.4952, 0.0001) == "66.4952"
+    assert execution._fmt_amount(0.9985, 0.0001) == "0.9985"
+    # A value already on the grid is unchanged; a tiny value floors toward 0.
+    assert execution._fmt_amount(0.00005, 0.0001) == "0.0000"
+    # increment 0 (unknown) -> pass the value through, no rounding.
+    assert float(execution._fmt_amount(8.2895, 0)) == pytest.approx(8.2895)
+
+
+def test_open_long_floors_funds_to_quote_increment(monkeypatch, tmp_path):
+    # The SOL-USDT 400100 "Funds increment invalid": funds like 8.2895 must be
+    # floored to the symbol's quoteIncrement before submission.
+    monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))
+    monkeypatch.setattr(config, "LIVE_TRADING", True)
+    monkeypatch.setattr(config, "FEE_RATE", 0.001)
+    state.init_db()
+    captured = {}
+    async def info(_s): return _symbol_info(
+        symbol="SOL-USDT", base_increment=0.0001, base_min_size=0.001,
+        quote_increment=0.001, quote_min_size=0.1,
+    )
+    async def bal(_c, account_type="trade"): return 1000.0
+    async def active(_s=None): return []
+    async def place(symbol, side, *, funds=None, size=None):
+        captured["funds"] = funds
+        return {"dryRun": False, "orderId": "ORD", "order": {"clientOid": "c1"}}
+    async def fills(_oid):
+        return {"filled_size": 0.05, "avg_price": 165.79, "fee": 0.0083,
+                "fee_currency": "USDT", "fills": 1}
+    monkeypatch.setattr(kucoin_client, "get_symbol_info", info)
+    monkeypatch.setattr(kucoin_client, "get_available_balance", bal)
+    monkeypatch.setattr(kucoin_client, "list_active_orders", active)
+    monkeypatch.setattr(kucoin_client, "place_market_order", place)
+    monkeypatch.setattr(kucoin_client, "get_order_fills", fills)
+    monkeypatch.setattr(execution, "_FILL_RETRY_DELAY_S", 0)
+
+    # size 0.05 * ref 165.79 = 8.2895 -> floored to the 0.001 step = 8.289.
+    asyncio.run(execution.open_long("SOL-USDT", 0.05, 165.79, 158.0, 175.0, live=True))
+    assert captured["funds"] == "8.289"                    # 3 decimals, on-grid
+    # The submitted funds never has finer precision than the quote increment.
+    assert len(captured["funds"].split(".")[-1]) <= 3
 
 
 # ------------------------------------------------------ candle history fetch
@@ -356,10 +426,12 @@ def test_close_long_aborts_and_removes_phantom_when_base_missing(monkeypatch, tm
     placed = {"n": 0}
     async def bal(_c, account_type="trade"):
         return 0.0                       # exchange holds no BTC
+    async def info(_s): return _symbol_info()
     async def place(*_a, **_k):
         placed["n"] += 1
         return {"dryRun": False, "orderId": "x", "order": {}}
     monkeypatch.setattr(kucoin_client, "get_available_balance", bal)
+    monkeypatch.setattr(kucoin_client, "get_symbol_info", info)
     monkeypatch.setattr(kucoin_client, "place_market_order", place)
 
     net, res = asyncio.run(execution.close_long(pos, 108.0, "target"))
@@ -367,6 +439,39 @@ def test_close_long_aborts_and_removes_phantom_when_base_missing(monkeypatch, tm
     assert placed["n"] == 0             # NO sell was submitted
     assert net == 0.0
     assert state.count_open() == 0      # phantom removed
+
+
+def test_close_long_sells_min_of_recorded_and_held(monkeypatch, tmp_path):
+    # Oversell guard: the buy fee is taken in base, so the exchange holds a hair
+    # less than the recorded size. The SELL must offload the REAL held amount
+    # (floored to the lot), never the larger recorded size — else KuCoin 200004.
+    monkeypatch.setattr(config, "STATE_DB_PATH", str(tmp_path / "s.sqlite3"))
+    monkeypatch.setattr(config, "LIVE_TRADING", True)
+    state.init_db()
+    state.add_position(state.Position("BTC-USDT", "buy", 1.0, 100, 96, 108, 0.0, "o", entry_fee=0.1))
+    pos = state.open_positions()[0]
+
+    captured = {}
+    async def bal(_c, account_type="trade"):
+        return 0.995                     # held slightly below the recorded 1.0
+    async def info(_s): return _symbol_info(base_increment=0.0001, base_min_size=0.001)
+    async def place(symbol, side, *, funds=None, size=None):
+        captured["size"], captured["funds"] = size, funds
+        return {"dryRun": False, "orderId": "SELL1", "order": {}}
+    async def fills(_oid):
+        return {"filled_size": 0.995, "avg_price": 108.0, "fee": 0.107,
+                "fee_currency": "USDT", "fills": 1}
+    monkeypatch.setattr(kucoin_client, "get_available_balance", bal)
+    monkeypatch.setattr(kucoin_client, "get_symbol_info", info)
+    monkeypatch.setattr(kucoin_client, "place_market_order", place)
+    monkeypatch.setattr(kucoin_client, "get_order_fills", fills)
+    monkeypatch.setattr(execution, "_FILL_RETRY_DELAY_S", 0)
+
+    net, res = asyncio.run(execution.close_long(pos, 108.0, "target"))
+    assert res.get("phantom") is not True                 # a real sell happened
+    assert captured["funds"] is None                       # sold by base size
+    assert float(captured["size"]) == pytest.approx(0.995)  # the HELD amount, not 1.0
+    assert state.count_open() == 0
 
 
 # ------------------------------------------------------ net P/L accounting

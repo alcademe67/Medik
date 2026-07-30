@@ -22,7 +22,7 @@ strategy from here — see the change policy below.
 - **Pipeline instrumentation** — every entry decision and order is logged
   (`PIPE …`, `LIVE ORDER …`, `FILL …`, `OPEN/CLOSE …`).
 - **Emergency stop** — a `STOP` file halts the engine on the next tick.
-- Test suite: **68 passing**.
+- Test suite: **80 passing**.
 
 ## Change policy while frozen
 
@@ -78,6 +78,26 @@ Allowed under the freeze (accounting / exchange only — no strategy change):
   lowered the warm-up threshold (`regime_signal.min_bars`, ~55 bars) to what the
   indicators actually need rather than the full trend-EMA period, so a short
   candle history can no longer strand the bot in warming-up forever.
+
+- **KuCoin `400100 "Funds increment invalid"` on some BUYs (e.g. SOL-USDT).** The
+  market-buy `funds` amount was rounded to 4 decimals (`8.2895`), finer than the
+  symbol's `quoteIncrement`, so KuCoin rejected the order. Fix: `get_symbol_info`
+  now returns `quote_increment`, and `open_long` floors `funds` to that step via
+  a Decimal helper (`_fmt_amount`) that also emits a clean fixed-point string
+  (no binary-float artifacts like `8.288999999`, no scientific notation). SELL
+  sizes are floored to `baseIncrement` the same way.
+
+- **`FILL … size=0.00000000 fills=0` — entry fill recorded as empty.** A market
+  order's HTTP response can arrive before KuCoin has recorded its fills, so the
+  single `/api/v1/fills` read returned nothing; the position was then booked with
+  the intended size and a **zero entry fee**, and — because the buy fee is taken
+  in the base coin — the recorded size sat a hair above what the account actually
+  held, risking a `200004` on the eventual SELL. Fixes: (1) `_settle_fees` now
+  **polls the fills** a few times (short backoff) before giving up, so the real
+  filled size and fee are captured; (2) `close_long` sells
+  `min(recorded_size, exchange_held)` floored to the lot size — it can never try
+  to offload more base than the account holds, and drops the position as a
+  phantom only when nothing sellable remains. Net P/L accounting is unchanged.
 
 ## Running the bot (Windows, no typing)
 

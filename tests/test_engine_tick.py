@@ -82,7 +82,8 @@ def test_engine_opens_positions_across_the_watchlist(tmp_path, monkeypatch):
 
     async def fake_info(sym):
         return dict(symbol=sym, base_min_size=0.0001, quote_min_size=0.1,
-                    base_increment=0.0001, price_increment=0.01, enable_trading=True)
+                    base_increment=0.0001, price_increment=0.01,
+                    quote_increment=0.000001, enable_trading=True)
 
     async def fake_notify(*_a, **_k):
         return None
@@ -186,7 +187,8 @@ def test_engine_one_bad_coin_does_not_starve_the_others(tmp_path, monkeypatch):
 
     async def fake_info(sym):
         return dict(symbol=sym, base_min_size=0.0001, quote_min_size=0.1,
-                    base_increment=0.0001, price_increment=0.01, enable_trading=True)
+                    base_increment=0.0001, price_increment=0.01,
+                    quote_increment=0.000001, enable_trading=True)
 
     async def fake_notify(*_a, **_k):
         return None
