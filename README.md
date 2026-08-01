@@ -65,12 +65,27 @@ place_limit_order(client, "BTC-USDT", "buy", size="0.001", price="50000", confir
 
 ## Safety model
 
-- No order is ever sent without an explicit `confirm=True`; omitting it
-  raises `OrderRejected` before any network call.
+- No order is ever *placed* without an explicit `confirm=True`; omitting
+  it raises `OrderRejected` before any network call. `cancel_order` and
+  `open_orders` are deliberately not gated - they can only reduce
+  exposure, never add to it.
 - The order example is a dry run unless the `LIVE=1` environment variable
   is set.
-- Inputs (side, symbol shape, positive size/price, size-vs-funds) are
-  validated locally before submission.
+- Inputs (side, symbol shape, finite positive size/price, size-vs-funds)
+  are validated locally before submission. Sizes and prices are rendered
+  as plain decimal strings, never scientific notation, which KuCoin
+  rejects; `nan` and `inf` are refused.
+- `open_orders` follows KuCoin's pagination, so it never silently
+  under-reports when many orders are resting.
+
+## Reliability
+
+- Rate-limited (HTTP 429 or code `429000`), gateway-error and dropped
+  requests are retried with exponential backoff, honouring `Retry-After`.
+  Tune with `KuCoinClient(max_retries=..., backoff=...)`.
+- The first signed request measures the offset against KuCoin's clock, so
+  local clock drift does not silently invalidate every private call. Pass
+  `auto_sync_time=False` to skip the probe.
 
 ## Tests
 

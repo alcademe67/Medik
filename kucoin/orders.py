@@ -1,18 +1,24 @@
 """Safety-gated order helpers for KuCoin spot trading.
 
 Every order-placing function requires ``confirm=True``. Without it the
-order is rejected locally before any network call is made, mirroring the
-safeguards used by the IBKR integration in this repository.
+order is rejected locally before any network call is made. Cancelling and
+listing are not gated: they can only reduce exposure, never add to it.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Optional
+import warnings
+from decimal import Decimal, InvalidOperation
+from typing import List, Optional
 
 from .client import KuCoinClient
 
 VALID_SIDES = ("buy", "sell")
+
+# KuCoin caps page size at 500; the page ceiling is a runaway-loop backstop.
+ORDER_PAGE_SIZE = 500
+MAX_ORDER_PAGES = 100
 
 
 class OrderRejected(Exception):
@@ -29,13 +35,21 @@ def _validate_side_and_symbol(symbol: str, side: str) -> str:
 
 
 def _positive_str(name: str, value) -> str:
+    """Validate a size/price and render it as a plain decimal string.
+
+    KuCoin rejects scientific notation, so small values must not be
+    formatted as ``1e-05``. Decimal (not float) is used throughout so the
+    digits the caller supplied survive the round trip intact.
+    """
     try:
-        number = float(value)
-    except (TypeError, ValueError):
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError):
         raise OrderRejected(f"{name} must be numeric, got {value!r}") from None
+    if not number.is_finite():
+        raise OrderRejected(f"{name} must be a finite number, got {value!r}")
     if number <= 0:
         raise OrderRejected(f"{name} must be > 0, got {value!r}")
-    return str(value)
+    return format(number, "f")
 
 
 def place_limit_order(
@@ -103,7 +117,37 @@ def cancel_order(client: KuCoinClient, order_id: str) -> dict:
 
 
 def open_orders(client: KuCoinClient, symbol: Optional[str] = None) -> list:
-    data = client.list_orders(status="active", symbol=symbol)
-    if isinstance(data, dict):
-        return data.get("items", [])
-    return data
+    """Return every active order, following KuCoin's pagination.
+
+    ``/api/v1/orders`` is paginated, so reading only the first page
+    silently under-reports once more than ``ORDER_PAGE_SIZE`` orders are
+    resting. Pages are walked until the reported ``totalPage`` is reached.
+    """
+    items: List[dict] = []
+    page = 1
+    while page <= MAX_ORDER_PAGES:
+        data = client.list_orders(
+            status="active", symbol=symbol, current_page=page, page_size=ORDER_PAGE_SIZE
+        )
+        if not isinstance(data, dict):
+            return list(data or [])
+        batch = data.get("items") or []
+        items.extend(batch)
+        total_page = data.get("totalPage")
+        if total_page is not None:
+            try:
+                if page >= int(total_page):
+                    return items
+            except (TypeError, ValueError):
+                pass
+        # No usable totalPage: a short page means we reached the end.
+        if len(batch) < ORDER_PAGE_SIZE:
+            return items
+        page += 1
+
+    warnings.warn(
+        f"open_orders stopped after {MAX_ORDER_PAGES} pages "
+        f"({len(items)} orders); the list may be incomplete",
+        stacklevel=2,
+    )
+    return items

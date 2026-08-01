@@ -1,11 +1,16 @@
 import json
+import time
 import unittest
+
+import requests
 
 from kucoin.client import KuCoinAPIError, KuCoinClient, MissingCredentials
 from kucoin.data import recent_candles
 from kucoin.orders import (
+    ORDER_PAGE_SIZE,
     OrderRejected,
     cancel_order,
+    open_orders,
     place_limit_order,
     place_market_order,
 )
@@ -130,12 +135,13 @@ class TransportTests(unittest.TestCase):
             api_secret="test-secret",
             api_passphrase="test-passphrase",
             session=session,
+            auto_sync_time=False,
         )
         client.accounts(currency="USDT")
-        headers = session.calls[0]["headers"]
+        headers = session.calls[-1]["headers"]
         self.assertIn("KC-API-SIGN", headers)
         self.assertEqual(headers["KC-API-KEY"], "test-key")
-        self.assertTrue(session.calls[0]["url"].endswith("/api/v1/accounts?currency=USDT"))
+        self.assertTrue(session.calls[-1]["url"].endswith("/api/v1/accounts?currency=USDT"))
 
 
 class OrderSafetyTests(unittest.TestCase):
@@ -193,6 +199,275 @@ class OrderSafetyTests(unittest.TestCase):
     def test_cancel_requires_order_id(self):
         with self.assertRaises(OrderRejected):
             cancel_order(FakeOrderClient(), "")
+
+
+class NumberFormattingTests(unittest.TestCase):
+    """KuCoin rejects scientific notation, NaN and Infinity."""
+
+    def submitted(self, **kwargs):
+        client = FakeOrderClient()
+        place_limit_order(client, "BTC-USDT", "buy", confirm=True, **kwargs)
+        return client.orders[0]
+
+    def test_small_size_is_not_scientific_notation(self):
+        payload = self.submitted(size=0.00001, price=50000)
+        self.assertEqual(payload["size"], "0.00001")
+        self.assertEqual(payload["price"], "50000")
+
+    def test_very_small_size_is_not_scientific_notation(self):
+        self.assertEqual(self.submitted(size=1e-9, price="50000")["size"], "0.000000001")
+
+    def test_string_inputs_survive_unchanged(self):
+        payload = self.submitted(size="0.001", price="50000.5")
+        self.assertEqual(payload["size"], "0.001")
+        self.assertEqual(payload["price"], "50000.5")
+
+    def test_nan_is_rejected(self):
+        for bad in ("nan", float("nan")):
+            with self.assertRaises(OrderRejected):
+                self.submitted(size=bad, price="50000")
+
+    def test_infinity_is_rejected(self):
+        for bad in ("inf", float("inf"), float("-inf")):
+            with self.assertRaises(OrderRejected):
+                self.submitted(size=bad, price="50000")
+
+    def test_non_numeric_still_rejected(self):
+        with self.assertRaises(OrderRejected):
+            self.submitted(size="abc", price="50000")
+
+
+class OpenOrdersPaginationTests(unittest.TestCase):
+    class PagedClient:
+        def __init__(self, total, total_page_field=True):
+            self.total = total
+            self.total_page_field = total_page_field
+            self.pages_requested = []
+
+        def list_orders(self, status="active", symbol=None, current_page=None, page_size=None):
+            self.pages_requested.append(current_page)
+            start = (current_page - 1) * page_size
+            items = [{"id": i} for i in range(start, min(start + page_size, self.total))]
+            page = {"currentPage": current_page, "pageSize": page_size, "items": items}
+            if self.total_page_field:
+                page["totalPage"] = -(-self.total // page_size) or 1
+            return page
+
+    def test_all_pages_are_followed(self):
+        client = self.PagedClient(total=ORDER_PAGE_SIZE * 2 + 7)
+        orders = open_orders(client)
+        self.assertEqual(len(orders), ORDER_PAGE_SIZE * 2 + 7)
+        self.assertEqual(client.pages_requested, [1, 2, 3])
+
+    def test_single_page_makes_one_request(self):
+        client = self.PagedClient(total=3)
+        self.assertEqual(len(open_orders(client)), 3)
+        self.assertEqual(client.pages_requested, [1])
+
+    def test_missing_total_page_falls_back_to_short_page(self):
+        client = self.PagedClient(total=ORDER_PAGE_SIZE + 2, total_page_field=False)
+        self.assertEqual(len(open_orders(client)), ORDER_PAGE_SIZE + 2)
+        self.assertEqual(client.pages_requested, [1, 2])
+
+    def test_bare_list_response_is_returned_as_is(self):
+        class BareClient:
+            def list_orders(self, **kwargs):
+                return [{"id": 1}]
+
+        self.assertEqual(open_orders(BareClient()), [{"id": 1}])
+
+
+class ClockSyncTests(unittest.TestCase):
+    def make_client(self, session, **kwargs):
+        return KuCoinClient(
+            api_key="k", api_secret="s", api_passphrase="p", session=session, **kwargs
+        )
+
+    def test_offset_is_applied_to_signed_timestamp(self):
+        class TimeSession(FakeSession):
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls.append({"url": url, "headers": headers})
+                if url.endswith("/api/v1/timestamp"):
+                    # Server clock is an hour ahead of ours.
+                    return FakeResponse(
+                        {"code": "200000", "data": int(time.time() * 1000) + 3_600_000}
+                    )
+                return FakeResponse({"code": "200000", "data": []})
+
+        session = TimeSession()
+        client = self.make_client(session)
+        client.accounts()
+        offset = client._time_offset_ms
+        self.assertGreater(offset, 3_500_000)
+        signed_ts = int(session.calls[-1]["headers"]["KC-API-TIMESTAMP"])
+        self.assertGreater(signed_ts, int(time.time() * 1000) + 3_500_000)
+
+    def test_sync_is_attempted_only_once(self):
+        session = FakeSession(data=[])
+        client = self.make_client(session)
+        client.accounts()
+        client.accounts()
+        probes = [c for c in session.calls if c["url"].endswith("/api/v1/timestamp")]
+        self.assertEqual(len(probes), 1)
+
+    def test_failed_sync_does_not_break_signing(self):
+        class BrokenTimeSession(FakeSession):
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls.append({"url": url, "headers": headers})
+                if url.endswith("/api/v1/timestamp"):
+                    return FakeResponse({"code": "500000", "msg": "boom"})
+                return FakeResponse({"code": "200000", "data": []})
+
+        session = BrokenTimeSession()
+        client = self.make_client(session)
+        self.assertEqual(client.accounts(), [])
+        self.assertEqual(client._time_offset_ms, 0)
+
+    def test_auto_sync_can_be_disabled(self):
+        session = FakeSession(data=[])
+        client = self.make_client(session, auto_sync_time=False)
+        client.accounts()
+        self.assertEqual(len(session.calls), 1)
+
+
+class RetryTests(unittest.TestCase):
+    def setUp(self):
+        # Keep retry tests instant.
+        self._sleeps = []
+        self._real_sleep = time.sleep
+        time.sleep = self._sleeps.append
+        self.addCleanup(lambda: setattr(time, "sleep", self._real_sleep))
+
+    def make_client(self, session, **kwargs):
+        return KuCoinClient(
+            api_key="", api_secret="", api_passphrase="", session=session, **kwargs
+        )
+
+    def test_429_is_retried_then_succeeds(self):
+        class Flaky(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.n = 0
+
+            def request(self, *args, **kwargs):
+                self.n += 1
+                if self.n < 3:
+                    return FakeResponse({"code": "200000", "data": None}, status_code=429)
+                return FakeResponse({"code": "200000", "data": 42})
+
+        session = Flaky()
+        self.assertEqual(self.make_client(session).server_time(), 42)
+        self.assertEqual(session.n, 3)
+        self.assertEqual(self._sleeps, [0.5, 1.0])
+
+    def test_in_band_rate_limit_code_is_retried(self):
+        class Limited(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.n = 0
+
+            def request(self, *args, **kwargs):
+                self.n += 1
+                if self.n < 2:
+                    return FakeResponse({"code": "429000", "msg": "Too Many Requests"})
+                return FakeResponse({"code": "200000", "data": 7})
+
+        self.assertEqual(self.make_client(Limited()).server_time(), 7)
+
+    def test_retry_after_header_is_honoured(self):
+        class WithHeader(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.n = 0
+
+            def request(self, *args, **kwargs):
+                self.n += 1
+                if self.n == 1:
+                    resp = FakeResponse({"code": "200000", "data": None}, status_code=503)
+                    resp.headers = {"Retry-After": "2.5"}
+                    return resp
+                return FakeResponse({"code": "200000", "data": 1})
+
+        self.make_client(WithHeader()).server_time()
+        self.assertEqual(self._sleeps, [2.5])
+
+    def test_retries_are_exhausted_then_error_raised(self):
+        class AlwaysLimited(FakeSession):
+            def request(self, *args, **kwargs):
+                return FakeResponse({"code": "429000", "msg": "Too Many Requests"}, status_code=200)
+
+        with self.assertRaises(KuCoinAPIError) as ctx:
+            self.make_client(AlwaysLimited()).server_time()
+        self.assertEqual(ctx.exception.code, "429000")
+
+    def test_connection_error_is_retried(self):
+        class Dropping(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.n = 0
+
+            def request(self, *args, **kwargs):
+                self.n += 1
+                if self.n < 3:
+                    raise requests.ConnectionError("reset")
+                return FakeResponse({"code": "200000", "data": 5})
+
+        self.assertEqual(self.make_client(Dropping()).server_time(), 5)
+
+    def test_connection_error_propagates_after_retries(self):
+        class Dead(FakeSession):
+            def request(self, *args, **kwargs):
+                raise requests.ConnectionError("reset")
+
+        with self.assertRaises(requests.ConnectionError):
+            self.make_client(Dead()).server_time()
+
+    def test_client_error_is_not_retried(self):
+        class BadRequest(FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.n = 0
+
+            def request(self, *args, **kwargs):
+                self.n += 1
+                return FakeResponse({"code": "400100", "msg": "Invalid symbol"}, status_code=400)
+
+        session = BadRequest()
+        with self.assertRaises(KuCoinAPIError):
+            self.make_client(session).server_time()
+        self.assertEqual(session.n, 1)
+
+
+class ResponseParsingTests(unittest.TestCase):
+    def make_client(self, session):
+        return KuCoinClient(api_key="", api_secret="", api_passphrase="", session=session)
+
+    def test_non_dict_json_raises_api_error(self):
+        class ListSession(FakeSession):
+            def request(self, *args, **kwargs):
+                return FakeResponse(["not", "an", "envelope"])
+
+        with self.assertRaises(KuCoinAPIError) as ctx:
+            self.make_client(ListSession()).server_time()
+        self.assertIn("unexpected response body", ctx.exception.message)
+
+    def test_non_json_body_raises_api_error(self):
+        class HtmlResponse:
+            status_code = 200
+            text = "<html>maintenance</html>"
+
+            def json(self):
+                raise ValueError("no json")
+
+            def raise_for_status(self):
+                pass
+
+        class HtmlSession(FakeSession):
+            def request(self, *args, **kwargs):
+                return HtmlResponse()
+
+        with self.assertRaises(KuCoinAPIError):
+            self.make_client(HtmlSession()).server_time()
 
 
 class CandleParsingTests(unittest.TestCase):
