@@ -51,6 +51,17 @@ this repo or via connected IBKR tools. They are enforced in code by
   always keeps a human tap between signal and execution.
 - The live TWS socket is 127.0.0.1:7496; scripts here only work while the
   owner's TWS is open and logged in.
+- **`service/` (added 2026-08-03)** — a Windows background service
+  (`supervisor.py`) that runs the scan/score/risk pipeline continuously,
+  with reconnect-with-retry, crash recovery, health monitoring, and
+  rotating logs. `MODE=PAPER` is fully autonomous, same guard as
+  `autotrade_paper.py`. `MODE=LIVE` runs the full pipeline against the
+  live account and QUEUES qualifying setups to `journal.pending_orders` —
+  it does not call `ib.placeOrder`/modify/cancel under any mode setting;
+  there is no code path in this service that submits a live order without
+  a human running `examples/review_pending_orders.py` and typing YES per
+  order. This was explicitly requested and explicitly declined during
+  development — do not add one. See `service/SETUP_WINDOWS.md`.
 
 ## Alerts
 
@@ -72,4 +83,8 @@ target, quantity. One line, no fluff.
   fill at next open, stop-first when stop and target share a bar)
 - `examples/` — runnable entry points (`connect_test.py`, `run_scan.py`,
   `run_backtest.py`, `manage_open_positions.py`, `check_risk_limits.py`,
-  `show_journal.py`)
+  `show_journal.py`, `review_pending_orders.py`)
+- `service/` — Windows background service: `supervisor.py` (main loop),
+  `pipeline.py` (shared scan-score-risk-act cycle, mode-aware),
+  `config.py`, `health.py`, `alerts.py`, `market_hours.py`,
+  `logging_setup.py`, `run_supervisor.bat`, `SETUP_WINDOWS.md`

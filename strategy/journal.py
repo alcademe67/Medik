@@ -60,6 +60,24 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
     net_liquidation REAL NOT NULL
 );
 
+-- LIVE-mode candidates that passed the gate, score threshold, sizing, and
+-- portfolio risk limits land here -- NOT as a live order. status starts
+-- "pending" and only changes when a human runs
+-- examples/review_pending_orders.py and explicitly acts on each row.
+CREATE TABLE IF NOT EXISTS pending_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queued_at TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    entry REAL NOT NULL,
+    stop REAL NOT NULL,
+    target REAL NOT NULL,
+    score REAL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | placed | skipped | expired
+    reviewed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol TEXT NOT NULL,
@@ -224,6 +242,46 @@ def equity_baselines(now: datetime | None = None, db_path: str = DEFAULT_DB_PATH
             ).fetchone()
             out[key] = row[0] if row else None
     return out
+
+
+def queue_pending_order(
+    symbol: str,
+    side: str,
+    quantity: float,
+    entry: float,
+    stop: float,
+    target: float,
+    queued_at: str,
+    score: float | None = None,
+    db_path: str = DEFAULT_DB_PATH,
+) -> int:
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """INSERT INTO pending_orders
+               (queued_at, symbol, side, quantity, entry, stop, target, score, status)
+               VALUES (?,?,?,?,?,?,?,?,'pending')""",
+            (queued_at, symbol, side, quantity, entry, stop, target, score),
+        )
+        return cur.lastrowid
+
+
+def list_pending_orders(status: str = "pending", db_path: str = DEFAULT_DB_PATH) -> list[dict]:
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM pending_orders WHERE status = ? ORDER BY id ASC", (status,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_pending_order(order_id: int, status: str, reviewed_at: str, db_path: str = DEFAULT_DB_PATH) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_orders SET status = ?, reviewed_at = ? WHERE id = ?",
+            (status, reviewed_at, order_id),
+        )
 
 
 def recent_candidates(limit: int = 50, db_path: str = DEFAULT_DB_PATH) -> list[dict]:
