@@ -1,7 +1,12 @@
-"""Full scan pipeline: IBKR market scanner -> indicator gate -> risk sizing.
+"""Full scan pipeline: IBKR market scanner -> indicator gate -> scoring ->
+risk sizing -> journal.
 
-Prints every symbol that passes all checks, with the exact entry/stop/target
-and share count that respects the 20%-of-available-funds cap and 1:3 R:R.
+Prints every symbol that passes the 4-indicator gate, its 0-100 score, and
+(for score >= 90) the exact entry/stop/target and share count that respects
+the 20%-of-available-funds cap and 1:3 R:R. Every candidate and decision is
+logged to journal.sqlite regardless of outcome, so there's a durable record
+of what the scan saw and why each name was or wasn't traded.
+
 Does NOT place any orders -- review the output and act deliberately.
 
 Usage (TWS must be open and logged in):
@@ -9,6 +14,7 @@ Usage (TWS must be open and logged in):
 """
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -16,8 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ibkr.client import IBKRClient
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
+from strategy import journal
 from strategy.config import DEFAULT_CONFIG
 from strategy.risk import RiskRejected, size_position
+from strategy.scoring import score_row
 from strategy.signals import compute_indicator_frame, evaluate
 
 
@@ -25,17 +33,21 @@ def main() -> None:
     with IBKRClient() as client:
         ib = client.ib
 
-        available_funds = None
+        available_funds = net_liq = None
         for row in ib.accountSummary():
             if row.tag == "AvailableFunds":
                 available_funds = float(row.value)
-                break
+            elif row.tag == "NetLiquidation":
+                net_liq = float(row.value)
         if available_funds is None:
             raise RuntimeError("could not read AvailableFunds from TWS")
         print(f"Available funds: {available_funds:.2f}")
 
         symbols = scan_universe(ib)
         print(f"Scanner returned {len(symbols)} candidates: {symbols}")
+
+        now = datetime.now(timezone.utc).isoformat()
+        scan_id = journal.log_scan(now, len(symbols), available_funds, net_liq)
 
         data = fetch_universe(ib, symbols)
         hits = []
@@ -44,27 +56,42 @@ def main() -> None:
                 continue
             indf = compute_indicator_frame(df, DEFAULT_CONFIG)
             sig = evaluate(indf, DEFAULT_CONFIG)
+
+            score = score_row(indf.iloc[-1], sig, DEFAULT_CONFIG) if sig.passed else None
+            candidate_id = journal.log_candidate(
+                scan_id, symbol, now, sig.side, sig.passed,
+                score=score.total if score else None,
+                entry=sig.entry, stop=sig.stop, checks=sig.checks, reason=sig.reason,
+                db_path=journal.DEFAULT_DB_PATH,
+            )
+
             if not sig.passed:
+                continue
+            if not score.tradeable:
+                print(f"  {symbol}: passed gate but score {score.total}/100 < 90 threshold, skipping")
+                journal.log_decision(symbol, "score_below_threshold", now, candidate_id, f"score={score.total}")
                 continue
             try:
                 plan = size_position(sig.side, sig.entry, sig.stop, available_funds, DEFAULT_CONFIG)
             except RiskRejected as exc:
-                print(f"  {symbol}: signal passed but sizing rejected: {exc}")
+                print(f"  {symbol}: signal passed (score {score.total}) but sizing rejected: {exc}")
+                journal.log_decision(symbol, "sizing_rejected", now, candidate_id, str(exc))
                 continue
-            hits.append((symbol, sig, plan))
+            hits.append((symbol, sig, score, plan, candidate_id))
 
         if not hits:
-            print("\nNo symbol passed the full gate today.")
+            print("\nNo symbol passed the full gate + score threshold today.")
             return
 
-        print(f"\n{len(hits)} qualifying setup(s):")
-        for symbol, sig, plan in hits:
+        hits.sort(key=lambda h: h[2].total, reverse=True)
+        print(f"\n{len(hits)} qualifying setup(s), ranked by score:")
+        for symbol, sig, score, plan, candidate_id in hits:
             print(
-                f"  {symbol}: {plan.side} {plan.quantity} @ ~{plan.entry:.2f}, "
+                f"  {symbol}: score {score.total}/100  {plan.side} {plan.quantity} @ ~{plan.entry:.2f}, "
                 f"stop {plan.stop:.2f}, target {plan.target:.2f} "
-                f"(risk ${plan.capital_at_risk:.2f}, R:R 1:{plan.risk_reward:.0f}, "
-                f"checks: {sig.checks})"
+                f"(risk ${plan.capital_at_risk:.2f}, R:R 1:{plan.risk_reward:.0f})"
             )
+            journal.log_decision(symbol, "ranked_tradeable", now, candidate_id, f"score={score.total}")
 
 
 if __name__ == "__main__":
