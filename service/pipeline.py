@@ -24,6 +24,7 @@ from ibkr.scanner import scan_universe
 from strategy import journal
 from strategy.config import DEFAULT_CONFIG
 from strategy.data_quality import drop_incomplete_trailing_bar
+from strategy.pullback import compute_pullback_frame, evaluate_pullback
 from strategy.risk import RiskRejected, size_position
 from strategy.risk_limits import AccountState, check_trade_allowed
 from strategy.scoring import score_row
@@ -108,14 +109,33 @@ def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
             entry=sig.entry, stop=sig.stop, checks=sig.checks, reason=sig.reason,
         )
 
-        if not sig.passed or not score.tradeable:
+        # Two independent long-signal sources: the 4-indicator gate (with its
+        # score threshold) and the trend-pullback system. Gate wins if both
+        # fire (it carries the score); pullback fills the low-volume-pullback
+        # blind spot the gate structurally can't see. Both are long-only here:
+        # gate SELLs are logged above but never traded (account can't short).
+        strategy_name = entry_sig = None
+        if sig.passed and sig.side == "BUY" and score is not None and score.tradeable:
+            strategy_name, entry_sig = "gate", (sig.entry, sig.stop, score.total)
+        else:
+            psig = evaluate_pullback(compute_pullback_frame(df), DEFAULT_CONFIG)
+            if psig.passed:
+                strategy_name, entry_sig = "pullback", (psig.entry, psig.stop, None)
+                candidate_id = journal.log_candidate(
+                    scan_id, symbol, now, "BUY", True,
+                    entry=psig.entry, stop=psig.stop, checks=psig.checks,
+                    reason="pullback: " + psig.reason,
+                )
+
+        if strategy_name is None:
             continue
         if symbol in held or symbol in pending_symbols:
             journal.log_decision(symbol, "already_held_or_pending", now, candidate_id)
             continue
 
+        entry_px, stop_px, entry_score = entry_sig
         try:
-            plan = size_position(sig.side, sig.entry, sig.stop, available_funds, DEFAULT_CONFIG,
+            plan = size_position("BUY", entry_px, stop_px, available_funds, DEFAULT_CONFIG,
                                   net_liquidation=net_liq, fractional=True)
         except RiskRejected as exc:
             journal.log_decision(symbol, "sizing_rejected", now, candidate_id, str(exc))
@@ -141,17 +161,17 @@ def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
                 ib.placeOrder(qualified[0], order)
             ib.sleep(1)
             journal.log_decision(symbol, "paper_order_placed", now, candidate_id,
-                                  f"qty={plan.quantity} entry={plan.entry} stop={plan.stop}")
+                                  f"strategy={strategy_name} qty={plan.quantity} entry={plan.entry} stop={plan.stop}")
             result.new_orders_placed.append(symbol)
-            logger.info(f"PAPER: placed {symbol} {plan.side} {plan.quantity} @ {plan.entry}")
+            logger.info(f"PAPER[{strategy_name}]: placed {symbol} {plan.side} {plan.quantity} @ {plan.entry}")
         else:  # LIVE -- queue only, never place
             journal.queue_pending_order(
                 symbol, plan.side, plan.quantity, plan.entry, plan.stop, plan.target,
-                queued_at=now, score=score.total,
+                queued_at=now, score=entry_score,
             )
             journal.log_decision(symbol, "queued_for_review", now, candidate_id,
-                                  f"score={score.total} qty={plan.quantity}")
+                                  f"strategy={strategy_name} score={entry_score} qty={plan.quantity}")
             result.new_orders_queued.append(symbol)
-            logger.info(f"LIVE: queued {symbol} for review (score {score.total})")
+            logger.info(f"LIVE[{strategy_name}]: queued {symbol} for review (score {entry_score})")
 
     return result
