@@ -24,6 +24,7 @@ from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
 from strategy import journal
 from strategy.config import DEFAULT_CONFIG
+from strategy.data_quality import drop_incomplete_trailing_bar
 from strategy.risk import RiskRejected, size_position
 from strategy.scoring import score_row
 from strategy.signals import compute_indicator_frame, evaluate
@@ -52,6 +53,9 @@ def main() -> None:
         data = fetch_universe(ib, symbols)
         hits = []
         for symbol, df in data.items():
+            df, dropped = drop_incomplete_trailing_bar(df)
+            if dropped:
+                print(f"  {symbol}: dropped incomplete trailing bar (session not yet closed)")
             if len(df) < DEFAULT_CONFIG.warmup_bars:
                 continue
             indf = compute_indicator_frame(df, DEFAULT_CONFIG)
