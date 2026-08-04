@@ -13,6 +13,20 @@ class StrategyConfig:
     max_position_pct: float = 0.20  # never commit more than 20% of available funds to one trade
     max_deployed_pct: float = 0.80  # total invested across ALL positions; >=20% of equity stays cash
     min_risk_reward: float = 3.0  # reject any setup with reward:risk below 1:3
+    max_risk_pct: float = 0.02  # never risk more than 2% of net liquidation on one trade's stop
+
+    # Portfolio-level circuit breakers
+    max_concurrent_positions: int = 5
+    daily_loss_limit_pct: float = 0.03  # halt new entries if today's equity drop exceeds this
+    weekly_drawdown_limit_pct: float = 0.06
+    monthly_drawdown_limit_pct: float = 0.10
+
+    # In-trade management (applied to OPEN positions, not entries)
+    breakeven_at_r: float = 1.0  # move stop to entry once price has moved this many R in favor
+    trailing_stop_activate_r: float = 1.5  # start trailing once price has moved this many R in favor
+    trailing_stop_atr_mult: float = 2.0  # trail distance behind price, in ATR
+    partial_profit_r: float = 2.0  # take partial profit once price reaches this many R
+    partial_profit_fraction: float = 0.5  # fraction of the position to close at partial_profit_r
 
     # Trend filter (EMA crossover)
     ema_fast: int = 50

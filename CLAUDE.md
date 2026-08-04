@@ -18,6 +18,23 @@ this repo or via connected IBKR tools. They are enforced in code by
    ALL of these agree on the same direction (see `strategy/signals.py`):
    EMA50/EMA200 trend, RSI(14) in the directional band, MACD(12,26,9)
    alignment, and volume >= its 20-day average.
+4. **Score >= 90/100 to be tradeable** (added 2026-08-03). Every
+   gate-passing candidate is ranked 0-100 by `strategy/scoring.py` (trend
+   strength, momentum quality, volume surge, risk quality). Passing the
+   4-indicator gate is necessary but not sufficient — a valid-but-weak
+   setup below the threshold is not drafted.
+5. **Max 2% of net liquidation at risk per trade**, in addition to the 20%
+   notional cap — whichever is tighter binds. Enforced in
+   `strategy.risk.size_position` via its `net_liquidation` argument.
+6. **Portfolio circuit breakers** (`strategy/risk_limits.py`): new entries
+   halt automatically if the account hits its daily loss limit (3%), weekly
+   drawdown limit (6%), monthly drawdown limit (10%), max concurrent
+   positions (5), or the 80% exposure cap — checked before every scan via
+   `check_trade_allowed`.
+7. **Only completed session bars feed the gate.** `strategy/data_quality.py`
+   drops any trailing daily bar whose US regular session hasn't closed yet
+   (America/New_York wall-clock, not a UTC-hour proxy) — added after a
+   stale mid-session bar produced a false gate failure on 2026-08-03.
 
 ## Execution policy
 
@@ -45,8 +62,14 @@ target, quantity. One line, no fluff.
 
 - `ibkr/` — TWS connection (`client.py`), order helpers (`orders.py`),
   historical data (`data.py`), market scanner (`scanner.py`)
-- `strategy/` — indicator math, signal gate, risk sizing, config
+- `strategy/` — indicator math (`indicators.py`), signal gate
+  (`signals.py`), candidate scoring (`scoring.py`), position sizing/risk
+  (`risk.py`), portfolio circuit breakers (`risk_limits.py`), in-trade
+  management: breakeven/trailing/partial-profit (`trade_management.py`),
+  bar-completeness validation (`data_quality.py`), config, and the SQLite
+  decision journal (`journal.py`, → `journal.sqlite` at repo root, gitignored)
 - `backtest/` — no-lookahead multi-symbol backtester (signal on close,
   fill at next open, stop-first when stop and target share a bar)
 - `examples/` — runnable entry points (`connect_test.py`, `run_scan.py`,
-  `run_backtest.py`)
+  `run_backtest.py`, `manage_open_positions.py`, `check_risk_limits.py`,
+  `show_journal.py`)

@@ -26,6 +26,7 @@ from strategy import journal
 from strategy.config import DEFAULT_CONFIG
 from strategy.data_quality import drop_incomplete_trailing_bar
 from strategy.risk import RiskRejected, size_position
+from strategy.risk_limits import AccountState, check_trade_allowed
 from strategy.scoring import score_row
 from strategy.signals import compute_indicator_frame, evaluate
 
@@ -34,20 +35,41 @@ def main() -> None:
     with IBKRClient() as client:
         ib = client.ib
 
-        available_funds = net_liq = None
+        available_funds = net_liq = gross_position_value = None
         for row in ib.accountSummary():
             if row.tag == "AvailableFunds":
                 available_funds = float(row.value)
             elif row.tag == "NetLiquidation":
                 net_liq = float(row.value)
-        if available_funds is None:
-            raise RuntimeError("could not read AvailableFunds from TWS")
-        print(f"Available funds: {available_funds:.2f}")
+            elif row.tag == "GrossPositionValue":
+                gross_position_value = float(row.value)
+        if available_funds is None or net_liq is None:
+            raise RuntimeError("could not read account summary from TWS")
+        open_position_count = len([p for p in ib.positions() if p.position != 0])
+        print(f"Available funds: {available_funds:.2f}  Net liq: {net_liq:.2f}  "
+              f"Open positions: {open_position_count}")
+
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        journal.log_equity_snapshot(net_liq, now)
+        baselines = journal.equity_baselines(now_dt)
+        account_state = AccountState(
+            net_liquidation=net_liq,
+            gross_position_value=gross_position_value or 0.0,
+            open_position_count=open_position_count,
+            equity_start_of_day=baselines["day"],
+            equity_start_of_week=baselines["week"],
+            equity_start_of_month=baselines["month"],
+        )
+        allowed, reason = check_trade_allowed(account_state, DEFAULT_CONFIG)
+        if not allowed:
+            print(f"\nNEW ENTRIES HALTED: {reason}")
+            journal.log_scan(now, 0, available_funds, net_liq, notes=f"halted: {reason}")
+            return
 
         symbols = scan_universe(ib)
         print(f"Scanner returned {len(symbols)} candidates: {symbols}")
 
-        now = datetime.now(timezone.utc).isoformat()
         scan_id = journal.log_scan(now, len(symbols), available_funds, net_liq)
 
         data = fetch_universe(ib, symbols)
@@ -76,7 +98,8 @@ def main() -> None:
                 journal.log_decision(symbol, "score_below_threshold", now, candidate_id, f"score={score.total}")
                 continue
             try:
-                plan = size_position(sig.side, sig.entry, sig.stop, available_funds, DEFAULT_CONFIG)
+                plan = size_position(sig.side, sig.entry, sig.stop, available_funds, DEFAULT_CONFIG,
+                                      net_liquidation=net_liq, fractional=True)
             except RiskRejected as exc:
                 print(f"  {symbol}: signal passed (score {score.total}) but sizing rejected: {exc}")
                 journal.log_decision(symbol, "sizing_rejected", now, candidate_id, str(exc))

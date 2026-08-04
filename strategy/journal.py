@@ -13,6 +13,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 DEFAULT_DB_PATH = os.environ.get(
     "JOURNAL_DB_PATH",
@@ -51,6 +52,12 @@ CREATE TABLE IF NOT EXISTS decisions (
     action TEXT NOT NULL,
     detail TEXT,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS equity_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    taken_at TEXT NOT NULL,
+    net_liquidation REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -182,6 +189,41 @@ def log_trade(
             ),
         )
         return cur.lastrowid
+
+
+def log_equity_snapshot(net_liquidation: float, taken_at: str, db_path: str = DEFAULT_DB_PATH) -> int:
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO equity_snapshots (taken_at, net_liquidation) VALUES (?,?)",
+            (taken_at, net_liquidation),
+        )
+        return cur.lastrowid
+
+
+def equity_baselines(now: datetime | None = None, db_path: str = DEFAULT_DB_PATH) -> dict:
+    """Returns {"day": ..., "week": ..., "month": ...}, each the net
+    liquidation of the EARLIEST equity snapshot recorded within the current
+    UTC day / ISO week (Mon-start) / calendar month, or None if no snapshot
+    has been logged yet for that period -- callers should skip that
+    drawdown check rather than treat 0.0/None as a real baseline.
+    """
+    now = now or datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = day_start - timedelta(days=day_start.weekday())
+    month_start = day_start.replace(day=1)
+
+    init_db(db_path)
+    out = {}
+    with _connect(db_path) as conn:
+        for key, since in (("day", day_start), ("week", week_start), ("month", month_start)):
+            row = conn.execute(
+                "SELECT net_liquidation FROM equity_snapshots WHERE taken_at >= ? "
+                "ORDER BY taken_at ASC LIMIT 1",
+                (since.isoformat(),),
+            ).fetchone()
+            out[key] = row[0] if row else None
+    return out
 
 
 def recent_candidates(limit: int = 50, db_path: str = DEFAULT_DB_PATH) -> list[dict]:
