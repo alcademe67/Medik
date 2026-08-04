@@ -16,6 +16,8 @@ import pandas as pd
 
 from strategy.config import StrategyConfig, DEFAULT_CONFIG
 from strategy.risk import RiskRejected, size_position
+from strategy.risk_limits import AccountState, check_trade_allowed
+from strategy.scoring import score_row
 from strategy.signals import compute_indicator_frame, evaluate_row
 
 
@@ -28,7 +30,7 @@ class Trade:
     exit_date: pd.Timestamp | None = None
     exit_price: float | None = None
     exit_reason: str = ""
-    quantity: int = 0
+    quantity: float = 0
     stop: float = 0.0
     target: float = 0.0
     capital_at_risk: float = 0.0
@@ -86,10 +88,22 @@ def run_backtest(
     price_data: dict,
     starting_capital: float,
     config: StrategyConfig = DEFAULT_CONFIG,
+    fractional: bool = False,
+    enforce_score_threshold: bool = False,
+    enforce_risk_limits: bool = False,
 ) -> BacktestResult:
     """price_data: {symbol: DataFrame} with columns open/high/low/close/volume,
     indexed by date ascending. Each frame needs config.warmup_bars rows before
     any signal can fire.
+
+    fractional, enforce_score_threshold, and enforce_risk_limits all default
+    to False, which reproduces the original backtest behavior exactly
+    (whole-share sizing off the notional cap only, no score gate, no
+    portfolio circuit breakers) -- that's the version already validated
+    against real IBKR data. Set all three True to backtest the system as it
+    actually runs live/paper today: fractional 2%-risk-capped sizing, the
+    scoring engine's >=90 threshold, and the daily/weekly/monthly drawdown +
+    max-concurrent-positions circuit breakers from strategy.risk_limits.
     """
     frames = {}
     for symbol, df in price_data.items():
@@ -113,7 +127,32 @@ def run_backtest(
     # equity = cash + mark-to-market value of open positions, recomputed per date
     last_close: dict[str, float] = {}
 
+    # Baselines for the daily/weekly/monthly circuit breakers, only used
+    # when enforce_risk_limits=True. Reset to the prior day's closing
+    # equity whenever a new day/ISO-week/calendar-month begins.
+    day_baseline = week_baseline = month_baseline = starting_capital
+    tracked_week: tuple | None = None
+    tracked_month: tuple | None = None
+
+    def _mark_to_market(positions: dict[str, Trade]) -> float:
+        return sum(
+            p.quantity * last_close.get(s, p.entry_price)
+            if p.side == "BUY"
+            else p.quantity * (2 * p.entry_price - last_close.get(s, p.entry_price))
+            for s, p in positions.items()
+        )
+
     for date, group in merged.groupby(merged.index):
+        equity_before_today = cash + _mark_to_market(open_positions)
+        day_baseline = equity_before_today
+        iso_year, iso_week, _ = date.isocalendar()
+        if (iso_year, iso_week) != tracked_week:
+            week_baseline = equity_before_today
+            tracked_week = (iso_year, iso_week)
+        if (date.year, date.month) != tracked_month:
+            month_baseline = equity_before_today
+            tracked_month = (date.year, date.month)
+
         for _, row in group.iterrows():
             symbol = row["symbol"]
             last_close[symbol] = row["close"]
@@ -127,21 +166,37 @@ def run_backtest(
                 stop_distance = abs(planned_entry - planned_stop)
                 fill_price = float(row["open"])
                 stop = fill_price - stop_distance if side == "BUY" else fill_price + stop_distance
+
+                open_val = _mark_to_market(open_positions)
+                equity = cash + open_val
+
                 try:
-                    plan = size_position(side, fill_price, stop, cash, config)
+                    plan = size_position(
+                        side, fill_price, stop, cash, config,
+                        net_liquidation=equity if (fractional or enforce_risk_limits) else None,
+                        fractional=fractional,
+                    )
                 except RiskRejected:
                     plan = None
+
                 if plan is not None:
-                    # portfolio-level cap: total invested must stay under max_deployed_pct of equity
-                    open_val = sum(
-                        p.quantity * last_close.get(s, p.entry_price)
-                        if p.side == "BUY"
-                        else p.quantity * (2 * p.entry_price - last_close.get(s, p.entry_price))
-                        for s, p in open_positions.items()
-                    )
-                    equity = cash + open_val
-                    if open_val + plan.position_value > config.max_deployed_pct * equity:
-                        plan = None
+                    if enforce_risk_limits:
+                        state = AccountState(
+                            net_liquidation=equity,
+                            gross_position_value=open_val,
+                            open_position_count=len(open_positions),
+                            equity_start_of_day=day_baseline,
+                            equity_start_of_week=week_baseline,
+                            equity_start_of_month=month_baseline,
+                        )
+                        allowed, _reason = check_trade_allowed(state, config)
+                        if not allowed:
+                            plan = None
+                    else:
+                        # portfolio-level cap only: total invested must stay under max_deployed_pct of equity
+                        if open_val + plan.position_value > config.max_deployed_pct * equity:
+                            plan = None
+
                 if plan is not None:
                     cash -= plan.position_value
                     trades.append(
@@ -184,7 +239,12 @@ def run_backtest(
             if symbol not in open_positions and symbol not in pending_entries:
                 sig = evaluate_row(row, config)
                 if sig.passed:
-                    pending_entries[symbol] = {"side": sig.side, "entry": sig.entry, "stop": sig.stop}
+                    take = True
+                    if enforce_score_threshold:
+                        score = score_row(row, sig, config)
+                        take = score.tradeable
+                    if take:
+                        pending_entries[symbol] = {"side": sig.side, "entry": sig.entry, "stop": sig.stop}
 
         # mark-to-market equity at end of this date
         open_value = 0.0

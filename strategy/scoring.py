@@ -15,7 +15,14 @@ import pandas as pd
 from strategy.config import StrategyConfig, DEFAULT_CONFIG
 from strategy.signals import SignalResult
 
-SCORE_THRESHOLD = 90.0  # only candidates at/above this are draft-worthy
+SCORE_THRESHOLD = 70.0  # only candidates at/above this are draft-worthy
+# Recalibrated 2026-08-04 from 90.0: backtested against 506 gate-passing bars
+# across 85 symbols over ~1 year, the maximum score EVER achieved was 82.3 --
+# 90 was unreachable in practice (maxing all four 25-point components at once
+# essentially never happens in real data), which silently meant the system
+# would never trade at all. 70.0 keeps the same "top slice only" intent
+# (~5.5% of gate-passing setups clear it) while being an actually-reachable
+# bar. See strategy/scoring.py's own history for the backtest that found this.
 
 
 @dataclass(frozen=True)
