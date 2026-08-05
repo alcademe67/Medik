@@ -15,6 +15,12 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from strategy.config import StrategyConfig, DEFAULT_CONFIG
+from strategy.pullback import (
+    PULLBACK_LOOKBACK,
+    TREND_SMA,
+    compute_pullback_frame,
+    evaluate_pullback,
+)
 from strategy.risk import RiskRejected, size_position
 from strategy.risk_limits import AccountState, check_trade_allowed
 from strategy.scoring import score_row
@@ -36,6 +42,33 @@ class Trade:
     capital_at_risk: float = 0.0
     realized_pnl: float = 0.0
     r_multiple: float = 0.0
+    strategy: str = "gate"
+
+
+def _precompute_pullback_signals(price_data: dict, config: StrategyConfig) -> dict:
+    """{symbol: {date: (entry, stop, target)}} for every bar where the
+    pullback strategy fires.
+
+    Each bar is evaluated against a slice ending at that bar, so no
+    evaluation can see a future bar -- the same no-lookahead guarantee the
+    rest of this engine makes. Precomputed per-symbol here because the main
+    loop iterates a date-merged frame across all symbols and no longer has
+    each symbol's own history at hand.
+    """
+    out: dict = {}
+    first_valid = TREND_SMA + PULLBACK_LOOKBACK + 1
+    for symbol, df in price_data.items():
+        if len(df) <= first_valid:
+            continue
+        frame = compute_pullback_frame(df)
+        fired: dict = {}
+        for i in range(first_valid, len(frame)):
+            sig = evaluate_pullback(frame.iloc[: i + 1], config)
+            if sig.passed:
+                fired[frame.index[i]] = (sig.entry, sig.stop, sig.target)
+        if fired:
+            out[symbol] = fired
+    return out
 
 
 @dataclass
@@ -91,6 +124,8 @@ def run_backtest(
     fractional: bool = False,
     enforce_score_threshold: bool = False,
     enforce_risk_limits: bool = False,
+    signal_source: str = "gate",
+    long_only: bool = False,
 ) -> BacktestResult:
     """price_data: {symbol: DataFrame} with columns open/high/low/close/volume,
     indexed by date ascending. Each frame needs config.warmup_bars rows before
@@ -101,9 +136,27 @@ def run_backtest(
     (whole-share sizing off the notional cap only, no score gate, no
     portfolio circuit breakers) -- that's the version already validated
     against real IBKR data. Set all three True to backtest the system as it
-    actually runs live/paper today: fractional 2%-risk-capped sizing, the
-    scoring engine's >=90 threshold, and the daily/weekly/monthly drawdown +
+    actually runs live/paper today: fractional risk-capped sizing, the
+    scoring engine's threshold, and the daily/weekly/monthly drawdown +
     max-concurrent-positions circuit breakers from strategy.risk_limits.
+
+    signal_source selects which strategy generates entries:
+      "gate"     -- the 4-indicator gate only (default, original behavior)
+      "pullback" -- the trend-pullback strategy only
+      "both"     -- gate first, pullback as fallback, matching how
+                    service/pipeline.py picks a signal live.
+
+    long_only=True discards SELL/short signals, matching the owner's
+    long-only TFSA. The default False keeps the original both-sides
+    behavior so existing gate results stay reproducible.
+
+    Pullback entries carry ABSOLUTE stop and target levels (structure: the
+    pullback low and the swing high). Those levels do not shift with the
+    fill price the way the gate's ATR-derived stop does -- a support level
+    is where it is regardless of where the next bar opens. If the fill gaps
+    far enough that the swing-high target no longer clears the strategy's
+    minimum R:R, size_position rejects the trade, which is the honest
+    outcome rather than silently taking a worse trade than the one signalled.
     """
     frames = {}
     for symbol, df in price_data.items():
@@ -115,6 +168,10 @@ def run_backtest(
 
     if not frames:
         raise ValueError("no symbol has enough history to clear the warm-up window")
+
+    pullback_signals: dict = {}
+    if signal_source in ("pullback", "both"):
+        pullback_signals = _precompute_pullback_signals(price_data, config)
 
     merged = pd.concat(frames.values()).sort_index(kind="stable")
 
@@ -161,11 +218,21 @@ def run_backtest(
             pending = pending_entries.pop(symbol, None)
             if pending is not None and symbol not in open_positions:
                 side = pending["side"]
-                planned_entry = pending["entry"]
-                planned_stop = pending["stop"]
-                stop_distance = abs(planned_entry - planned_stop)
                 fill_price = float(row["open"])
-                stop = fill_price - stop_distance if side == "BUY" else fill_price + stop_distance
+                strategy_used = pending.get("strategy", "gate")
+
+                if strategy_used == "pullback":
+                    # Structural levels are absolute -- support and
+                    # resistance sit where they sit, regardless of where
+                    # the next bar happens to open.
+                    stop = pending["stop"]
+                    explicit_target = pending["target"]
+                    entry_min_rr = pending["min_rr"]
+                else:
+                    stop_distance = abs(pending["entry"] - pending["stop"])
+                    stop = fill_price - stop_distance if side == "BUY" else fill_price + stop_distance
+                    explicit_target = None
+                    entry_min_rr = None
 
                 open_val = _mark_to_market(open_positions)
                 equity = cash + open_val
@@ -175,8 +242,13 @@ def run_backtest(
                         side, fill_price, stop, cash, config,
                         net_liquidation=equity if (fractional or enforce_risk_limits) else None,
                         fractional=fractional,
+                        target=explicit_target,
+                        min_rr=entry_min_rr,
                     )
-                except RiskRejected:
+                except (RiskRejected, ValueError):
+                    # ValueError covers a gap through the structural stop,
+                    # which makes the signalled trade invalid rather than
+                    # merely unattractive.
                     plan = None
 
                 if plan is not None:
@@ -209,6 +281,7 @@ def run_backtest(
                             stop=plan.stop,
                             target=plan.target,
                             capital_at_risk=plan.capital_at_risk,
+                            strategy=strategy_used,
                         )
                     )
                     open_positions[symbol] = trades[-1]
@@ -237,14 +310,29 @@ def run_backtest(
 
             # 3) If flat and no fill pending, evaluate for a new signal on this bar's close.
             if symbol not in open_positions and symbol not in pending_entries:
-                sig = evaluate_row(row, config)
-                if sig.passed:
-                    take = True
-                    if enforce_score_threshold:
-                        score = score_row(row, sig, config)
-                        take = score.tradeable
-                    if take:
-                        pending_entries[symbol] = {"side": sig.side, "entry": sig.entry, "stop": sig.stop}
+                fired = False
+                if signal_source in ("gate", "both"):
+                    sig = evaluate_row(row, config)
+                    if sig.passed and not (long_only and sig.side != "BUY"):
+                        take = True
+                        if enforce_score_threshold:
+                            score = score_row(row, sig, config)
+                            take = score.tradeable
+                        if take:
+                            pending_entries[symbol] = {
+                                "side": sig.side, "entry": sig.entry, "stop": sig.stop,
+                                "target": None, "min_rr": None, "strategy": "gate",
+                            }
+                            fired = True
+                if not fired and signal_source in ("pullback", "both"):
+                    hit = pullback_signals.get(symbol, {}).get(date)
+                    if hit is not None:
+                        p_entry, p_stop, p_target = hit
+                        pending_entries[symbol] = {
+                            "side": "BUY", "entry": p_entry, "stop": p_stop,
+                            "target": p_target, "min_rr": config.pullback_min_rr,
+                            "strategy": "pullback",
+                        }
 
         # mark-to-market equity at end of this date
         open_value = 0.0
