@@ -174,6 +174,30 @@ Mechanics:
   QQQ fell 22.9% inside the window that returned +121.8%.
 - Execution policy is unchanged — Claude drafts, the owner submits.
 
+### Two things learned while placing the first core order (2026-08-05)
+
+**"Never take a loss to make a trade."** The owner stated this preference
+when asked about closing F (then −$2.22 unrealized). It is worth answering
+carefully rather than just complying, because the reasoning is a known and
+expensive bias (the disposition effect): an unrealized loss is *already*
+reflected in net liquidation, so selling converts "unrealized" to
+"realized" without changing the dollar value of the account. **This is a
+TFSA, so there is additionally zero tax difference between the two.** The
+decision-relevant question is only ever "which asset has the better
+expected return from here", never "what would this do to my cost basis".
+Evidence presented at the time: F returned +8.9% over 5 years (1.7%/yr,
+~5.9%/yr including its 4.21% dividend) versus QQQ's +94.5% (~14.7%/yr),
+and F alone was 43% of the account — double the single-issuer cap in
+rule 1. Say this plainly if it comes up again; don't quietly comply.
+
+**Size the buy AFTER the sells fill, never off projected proceeds.** The
+first QQQ draft was sized off expected sale proceeds and would have
+breached the 70% cap if F/JPM had filled below quote — caught only by
+re-checking against `size_core_holding` across a range of fill prices.
+Sale proceeds are unknown until filled, so either wait for the fills and
+size off real cash, or size against the *worst* plausible fill. Under-
+deploying is free; breaching the cap is not.
+
 ## Execution policy
 
 - **Claude never places live orders autonomously.** Orders are drafted
