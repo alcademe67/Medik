@@ -12,8 +12,14 @@ class StrategyConfig:
     # Position sizing
     max_position_pct: float = 0.20  # never commit more than 20% of available funds to one trade
     max_deployed_pct: float = 0.80  # total invested across ALL positions; >=20% of equity stays cash
-    min_risk_reward: float = 3.0  # reject any setup with reward:risk below 1:3
-    max_risk_pct: float = 0.02  # never risk more than 2% of net liquidation on one trade's stop
+    min_risk_reward: float = 3.0  # gate strategy: reject setups below 1:3 (derived target)
+    pullback_min_rr: float = 2.0  # pullback strategy: target is the PRIOR SWING HIGH (real
+    # resistance, not a derived multiple); skip if that target is closer than 2R.
+    # Both R:R styles per the swing methodology adopted 2026-08-04.
+    max_risk_pct: float = 0.01  # never risk more than 1% of net liquidation on one trade's stop
+    # (tightened from 2% on 2026-08-04, owner-delegated: matches the adopted
+    # methodology's guidance for developing accounts; the old 2% remains the
+    # absolute ceiling this must never be raised above without the owner.)
 
     # Portfolio-level circuit breakers
     max_concurrent_positions: int = 5

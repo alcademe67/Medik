@@ -16,8 +16,11 @@ Rules implemented here (daily bars):
                   low than the pullback low -- i.e. the pullback has
                   rejected and the trend is resuming.
   Stop:           just below the lowest low of the pullback.
-  Target:         config.min_risk_reward x the stop distance (the repo's
-                  standing 1:3 exceeds the strategy's 1:2 minimum).
+  Target:         the recent swing high -- actual resistance, where the
+                  methodology says to take profit -- NOT a derived
+                  multiple. If that target is closer than
+                  config.pullback_min_rr x the stop distance (1:2), the
+                  trade isn't worth taking and the signal does not fire.
 
 Deliberately different from strategy/signals.py: there is NO same-day
 volume-surge requirement. Healthy pullbacks print LOW volume by nature --
@@ -47,6 +50,7 @@ class PullbackSignal:
     passed: bool
     entry: float | None = None
     stop: float | None = None
+    target: float | None = None  # the swing high; realized R:R = (target-entry)/(entry-stop)
     reason: str = ""
     checks: dict = field(default_factory=dict)
 
@@ -98,4 +102,17 @@ def evaluate_pullback(df: pd.DataFrame, config: StrategyConfig = DEFAULT_CONFIG)
     if stop >= close:
         return PullbackSignal(False, reason="stop >= entry (degenerate pullback)", checks=checks)
 
-    return PullbackSignal(True, entry=close, stop=stop, reason="pullback resumption", checks=checks)
+    # Target = the swing high (real resistance). Require at least
+    # pullback_min_rr reward per unit risk to that target, else skip.
+    risk = close - stop
+    reward = swing_high - close
+    if reward < config.pullback_min_rr * risk:
+        return PullbackSignal(
+            False,
+            reason=f"target too close: swing high {swing_high:.2f} is "
+                   f"{reward / risk:.1f}R away (need {config.pullback_min_rr:.0f}R)",
+            checks=checks,
+        )
+
+    return PullbackSignal(True, entry=close, stop=stop, target=round(swing_high, 4),
+                           reason="pullback resumption", checks=checks)

@@ -116,11 +116,13 @@ def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
         # gate SELLs are logged above but never traded (account can't short).
         strategy_name = entry_sig = None
         if sig.passed and sig.side == "BUY" and score is not None and score.tradeable:
-            strategy_name, entry_sig = "gate", (sig.entry, sig.stop, score.total)
+            strategy_name = "gate"
+            entry_sig = (sig.entry, sig.stop, None, DEFAULT_CONFIG.min_risk_reward, score.total)
         else:
             psig = evaluate_pullback(compute_pullback_frame(df), DEFAULT_CONFIG)
             if psig.passed:
-                strategy_name, entry_sig = "pullback", (psig.entry, psig.stop, None)
+                strategy_name = "pullback"
+                entry_sig = (psig.entry, psig.stop, psig.target, DEFAULT_CONFIG.pullback_min_rr, None)
                 candidate_id = journal.log_candidate(
                     scan_id, symbol, now, "BUY", True,
                     entry=psig.entry, stop=psig.stop, checks=psig.checks,
@@ -133,10 +135,11 @@ def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
             journal.log_decision(symbol, "already_held_or_pending", now, candidate_id)
             continue
 
-        entry_px, stop_px, entry_score = entry_sig
+        entry_px, stop_px, entry_target, entry_min_rr, entry_score = entry_sig
         try:
             plan = size_position("BUY", entry_px, stop_px, available_funds, DEFAULT_CONFIG,
-                                  net_liquidation=net_liq, fractional=True)
+                                  net_liquidation=net_liq, fractional=True,
+                                  target=entry_target, min_rr=entry_min_rr)
         except RiskRejected as exc:
             journal.log_decision(symbol, "sizing_rejected", now, candidate_id, str(exc))
             continue

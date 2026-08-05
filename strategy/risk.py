@@ -49,6 +49,8 @@ def size_position(
     config: StrategyConfig,
     net_liquidation: float | None = None,
     fractional: bool = False,
+    target: float | None = None,
+    min_rr: float | None = None,
 ) -> PositionPlan:
     """Compute a position that respects the max-funds-per-trade cap, the
     minimum reward:risk ratio, and (when net_liquidation is supplied) the
@@ -66,9 +68,16 @@ def size_position(
     fractional defaults to False, which preserves the original whole-share
     behavior (and existing backtest results, which rely on it). Pass
     fractional=True for accounts that support fractional shares -- on a
-    small account, a strict 2%-of-equity risk cap combined with a
-    several-dollar stop distance can round to 0 whole shares even though a
-    fractional position is well within both caps.
+    small account, a strict risk cap combined with a several-dollar stop
+    distance can round to 0 whole shares even though a fractional position
+    is well within both caps.
+
+    target: optional explicit take-profit (e.g. the pullback strategy's
+    swing-high resistance level). When omitted, the target is derived as
+    min_rr x the stop distance, exactly as before. When given, it is
+    validated against min_rr and rejected if the reward is too small.
+    min_rr defaults to config.min_risk_reward; the pullback strategy passes
+    config.pullback_min_rr instead.
     """
     if entry <= 0 or stop <= 0:
         raise ValueError("entry and stop must be positive")
@@ -79,14 +88,28 @@ def size_position(
     if per_share_risk <= 0:
         raise RiskRejected("stop is equal to entry - zero risk distance")
 
+    required_rr = min_rr if min_rr is not None else config.min_risk_reward
+
     if side == "BUY":
         if stop >= entry:
             raise RiskRejected("BUY stop must be below entry")
-        target = entry + config.min_risk_reward * per_share_risk
+        if target is None:
+            target = entry + required_rr * per_share_risk
+        elif (target - entry) < required_rr * per_share_risk - 1e-9:
+            raise RiskRejected(
+                f"target {target:.2f} is only {(target - entry) / per_share_risk:.1f}R away "
+                f"(need {required_rr:.1f}R)"
+            )
     elif side == "SELL":
         if stop <= entry:
             raise RiskRejected("SELL (short) stop must be above entry")
-        target = entry - config.min_risk_reward * per_share_risk
+        if target is None:
+            target = entry - required_rr * per_share_risk
+        elif (entry - target) < required_rr * per_share_risk - 1e-9:
+            raise RiskRejected(
+                f"target {target:.2f} is only {(entry - target) / per_share_risk:.1f}R away "
+                f"(need {required_rr:.1f}R)"
+            )
     else:
         raise ValueError("side must be BUY or SELL")
 
@@ -116,7 +139,7 @@ def size_position(
 
     position_value = quantity * entry
     capital_at_risk = quantity * per_share_risk
-    risk_reward = config.min_risk_reward  # target is derived to hit this exactly
+    risk_reward = abs(target - entry) / per_share_risk  # actual realized R:R for this target
 
     return PositionPlan(
         side=side,
