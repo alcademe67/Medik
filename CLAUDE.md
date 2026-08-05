@@ -198,6 +198,22 @@ Sale proceeds are unknown until filled, so either wait for the fills and
 size off real cash, or size against the *worst* plausible fill. Under-
 deploying is free; breaching the cap is not.
 
+**Check the market clock BEFORE drafting, and verify state instead of
+trusting a report of it.** Two rounds of DAY-order drafts were priced and
+re-priced against live quotes on 2026-08-05 without noticing the session
+was minutes from closing; all were deleted unfilled at 16:11 ET. Rules:
+DAY drafts are worthless outside 09:30-16:00 ET, and a limit priced off a
+16:00 quote is stale against the next open — redraft at the open rather
+than leaving one queued overnight. Never draft an entry that spends cash
+the account does not yet hold: if a funding sell and a funded buy are both
+queued, an overnight gap can fill the buy while the sell misses,
+overdrawing the account. Sequence them, don't stack them. And confirm
+fills against `get_account_trades` + `get_account_positions` — an
+instruction sitting at `is_new: true` was never submitted, and live orders
+from previous sessions (e.g. GTC stops) stay working until explicitly
+cancelled *in the app*: there is no cancel/modify tool on the MCP
+connector, so Claude cannot clear them.
+
 ## Execution policy
 
 - **Claude never places live orders autonomously.** Orders are drafted
