@@ -88,6 +88,34 @@ Two separate problems, and the second is the fatal one:
    $19,000 account, at which point the strategy earns roughly $0** while
    an index fund returned far more over the same window.
 
+### Follow-up research (2026-08-05): what actually beat it
+
+After the above, standard low-frequency strategies were tested on 5 years
+of real IBKR ETF bars, net of the same commission model
+(`backtest/lowfreq.py`, `backtest/run_lowfreq_comparison.py`):
+
+| strategy | total | CAGR | maxDD | fills | commission |
+|---|---|---|---|---|---|
+| **QQQ buy & hold** | **+121.8%** | **17.3%** | 22.9% | **1** | **$1.00** |
+| QQQ 200-day timing (monthly) | +90.1% | 13.7% | **13.6%** | 33 | $6.35 |
+| dual momentum (quarterly) | +84.7% | 13.1% | 23.3% | 19 | $11.36 |
+| SPY buy & hold | +84.0% | 13.0% | 19.0% | 1 | $1.00 |
+| SPY 200-day timing | +37.6% | 6.6% | 11.5% | 32 | $9.67 |
+| x-sectional stock momentum (best of 4) | **−15.9%** | −3.4% | 43.5% | 59 | $23.24 |
+
+**Buy-and-hold beat every active strategy tested.** Cross-sectional stock
+momentum — the closest analogue to what this repo was originally built to
+do — lost money in all four configurations. The only thing timing bought
+was drawdown (13.6% vs 22.9%), at a cost of ~3.6%/yr in return.
+
+Caveats, stated so nobody over-reads the table: the window starts Aug 2022,
+i.e. *after* the 2022 bear (QQQ −33.7%, 35.6% drawdown), which flatters
+buy-and-hold and under-tests timing's whole purpose. Re-running from
+May 2022 did not change the ordering. These are also unadjusted price bars,
+so dividends are missing — which *understates* buy-and-hold, since it holds
+continuously while timing sits in cash. Five years is one regime, mostly a
+tech bull market; this is evidence, not proof.
+
 **Therefore: do not recommend, draft, or place live trades from these
 strategies as configured.** If the owner asks to trade them anyway, say
 plainly that the tested expectancy is negative and why. Legitimate paths
