@@ -59,12 +59,44 @@ this repo or via connected IBKR tools. They are enforced in code by
    as "her" rules or as verified from source. The same caveat applies to the
    1%-risk and 1:2-R:R choices in rules 2 and 5: sound, conventional swing
    practice, but not sourced.
-   **VALIDATION STATUS: UNVALIDATED.** As of 2026-08-05 this strategy has
-   never completed a backtest. Its only run (a short ~3-month window) was
-   roughly breakeven and is not evidence of anything. A 2-year dataset for
-   ~193 of the 204 universe names is cached at
-   `<scratchpad>/data2y/*.json` for exactly this purpose. **Run that
-   backtest before trusting or drafting on pullback signals.**
+   **VALIDATION STATUS: TESTED — DOES NOT HAVE A TRADEABLE EDGE.**
+   See "Backtest verdict" below. Do not present pullback signals as
+   validated; they are not.
+
+## Backtest verdict (2026-08-05) — READ BEFORE PROPOSING ANY LIVE TRADE
+
+Both strategies were backtested over **2 years of real IBKR daily bars,
+201 symbols**, long-only, with the full risk engine and fractional sizing
+active (`<scratchpad>/run_pullback_bt.py`, `net_of_commission.py`).
+
+| | gross P&L | commissions | **net** |
+|---|---|---|---|
+| pullback (149 trades) | +$4.72 | −$112.47 | **−$107.75 (−35.9%)** |
+| gate (45 trades) | +$6.73 | −$31.65 | **−$24.92 (−8.3%)** |
+
+Two separate problems, and the second is the fatal one:
+
+1. **Commissions.** This account's real schedule (measured from 90 days of
+   actual fills) is `clamp($0.005/share, min $1.00, max 1% of trade value)`.
+   At ~$35 positions the 1% cap binds both ways, so **every round trip costs
+   ~2% of position value**. Average gross profit per pullback trade was
+   ~$0.03 against ~$0.75 of commission.
+2. **There is essentially no edge to begin with.** Gross profit factor was
+   **1.03** (pullback) — +1.57% over *two years*, before costs. Scaling the
+   account does not rescue it: gross scales linearly but commissions floor
+   at $1.00/fill (~$298 for 298 fills), so **break-even is around a
+   $19,000 account, at which point the strategy earns roughly $0** while
+   an index fund returned far more over the same window.
+
+**Therefore: do not recommend, draft, or place live trades from these
+strategies as configured.** If the owner asks to trade them anyway, say
+plainly that the tested expectancy is negative and why. Legitimate paths
+forward are (a) find a genuinely higher-expectancy setup and re-test it the
+same way, (b) trade far less frequently so commission drag matters less, or
+(c) accept that a ~$300 account cannot overcome a 2%-per-round-trip cost
+structure and treat this repo as research/paper-trading infrastructure.
+Any future strategy change MUST be re-run through
+`net_of_commission.py` before it is described as working.
 
 ## Execution policy
 
