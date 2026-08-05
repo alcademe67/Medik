@@ -29,11 +29,11 @@ this repo or via connected IBKR tools. They are enforced in code by
    85 symbols over ~1 year, the max score ever achieved was 82.3, so 90 was
    unreachable and silently meant the system would never trade at all.
 5. **Max 1% of net liquidation at risk per trade** (tightened from 2% on
-   2026-08-04 per the owner-delegated Humbled Trader methodology; 2%
-   remains the hard ceiling this must never be raised above without the
-   owner), in addition to the 20% notional cap — whichever is tighter
-   binds. Enforced in `strategy.risk.size_position` via its
-   `net_liquidation` argument.
+   2026-08-04 — conventional swing-trading guidance for a small/developing
+   account; see the provenance note in rule 8. 2% remains the hard ceiling
+   this must never be raised above without the owner), in addition to the
+   20% notional cap — whichever is tighter binds. Enforced in
+   `strategy.risk.size_position` via its `net_liquidation` argument.
 6. **Portfolio circuit breakers** (`strategy/risk_limits.py`): new entries
    halt automatically if the account hits its daily loss limit (3%), weekly
    drawdown limit (6%), monthly drawdown limit (10%), max concurrent
@@ -44,13 +44,27 @@ this repo or via connected IBKR tools. They are enforced in code by
    (America/New_York wall-clock, not a UTC-hour proxy) — added after a
    stale mid-session bar produced a false gate failure on 2026-08-03.
 8. **Second long-signal source: trend-pullback strategy** (`strategy/pullback.py`,
-   added 2026-08-04, methodology owner-delegated to Humbled Trader's swing
-   approach). 200-SMA rising, pullback to the 8-EMA holding above the
+   added 2026-08-04). 200-SMA rising, pullback to the 8-EMA holding above the
    200-SMA, reclaim with a higher low. Stop below the pullback low; target
    the recent swing high (real resistance) at minimum 1:2, per rule 2 —
    evaluated independently of the gate strategy every scan, long-only. Both
    strategies' decisions are labeled `strategy=gate` / `strategy=pullback`
    in the journal so performance can be compared per-strategy.
+   **PROVENANCE — read this before citing it.** The owner asked for this to
+   be modeled on Humbled Trader (Shay Huang, humbledtrader.com). That site
+   is **blocked from this environment (HTTP 403)** and was never read. These
+   rules come from Claude's general knowledge of trend-pullback swing
+   trading and are only *attributed* to that methodology — they have NOT
+   been checked against her actual published material. Do not describe them
+   as "her" rules or as verified from source. The same caveat applies to the
+   1%-risk and 1:2-R:R choices in rules 2 and 5: sound, conventional swing
+   practice, but not sourced.
+   **VALIDATION STATUS: UNVALIDATED.** As of 2026-08-05 this strategy has
+   never completed a backtest. Its only run (a short ~3-month window) was
+   roughly breakeven and is not evidence of anything. A 2-year dataset for
+   ~193 of the 204 universe names is cached at
+   `<scratchpad>/data2y/*.json` for exactly this purpose. **Run that
+   backtest before trusting or drafting on pullback signals.**
 
 ## Execution policy
 
@@ -79,11 +93,63 @@ this repo or via connected IBKR tools. They are enforced in code by
   order. This was explicitly requested and explicitly declined during
   development — do not add one. See `service/SETUP_WINDOWS.md`.
 
+## Account facts (verified, stable)
+
+- **TFSA, base USD, LONG-ONLY** — cannot short. SELL/short signals from the
+  gate are journaled but must never be traded or drafted.
+- **Fractional shares are enabled** and are essential: the account is ~$300,
+  so a 20%-of-funds slice is ~$28 and can't buy one whole share of most
+  names. Always pass `fractional=True` to `size_position` for live sizing.
+- **One IBKR login per username.** Desktop TWS and the phone app both use
+  `alcademe67` and kick each other off. A second username (`alcademe6767`)
+  has been pending IBKR identity verification since 2026-07-23 — check
+  Client Portal → Message Center for a "Document Required" flag. Until it
+  activates, TWS cannot stay connected while the phone app is open.
+- Claude's IBKR MCP connector is a **separate session** from the owner's
+  logins — querying the account never disconnects their TWS or phone.
+
+## Environment gotchas (learned the hard way, 2026-08-03/05)
+
+- **Cron jobs are session-only and get wiped constantly** — often within
+  minutes, and always when the session ends. `CronList` before assuming any
+  watch is armed; re-arm on every session start. There is no durable
+  scheduler here. The reliable path is the Windows service in `service/`.
+- **Egress blocks a lot of the web.** Confirmed 403: Yahoo Finance /
+  yfinance, Wikipedia, humbledtrader.com. Market data must come from the
+  IBKR connector. WebSearch works and is the tool for news vetoes.
+- **Subagents must never call sleep/wait/Monitor** — foreground waiting is
+  blocked and hangs the agent until it dies. Tell them explicitly to retry
+  failed calls immediately with no pause.
+- **The IBKR connector rate-limits under parallel load.** ~5 concurrent
+  subagents is workable; 10 causes stalls and truncated/scrambled writes.
+  Have agents work one ticker at a time (fetch → write → verify → next) and
+  verify array-length consistency per file; batching many fetches before
+  writing produces cross-contaminated data.
+- **Long fan-outs hit session token limits** (resets are several hours
+  apart). Check coverage and gap-fill rather than restarting a whole batch.
+
+## Data caches (scratchpad, not in git)
+
+- `<scratchpad>/data/*.json` — ~1-year daily bars, ~88 names.
+- `<scratchpad>/data2y/*.json` — ~2-year daily bars, **~193 of 204** names,
+  fetched 2026-08-05 for the pending pullback backtest. Known bad/missing:
+  LUNR, REGN, TMO (ragged arrays — refetch before use); CFLT, BITF (no
+  resolvable US listing); ALB, AAL, DAL, UAL, CCL, NCLH (not fetched).
+  SNDK and WOLF have <2y of genuine history (spinoff/reorg) — not corrupt.
+- `<scratchpad>/eval_both.py` — evaluates one symbol against BOTH strategies
+  and enforces all sizing/R:R rules; used by the morning-scan cron.
+- **Always validate a cache file before scoring**: all six OHLCV+time arrays
+  must be equal length. A mid-session partial bar cached and reused after
+  close silently produced a false gate failure on 2026-08-03 — that's why
+  `strategy/data_quality.py` exists.
+
 ## Alerts
 
 When a scan produces a qualifying signal during a Claude session, push it to
 the owner's phone with the PushNotification tool: symbol, side, entry, stop,
-target, quantity. One line, no fluff.
+target, quantity. One line, no fluff. Note the background Windows service
+**cannot** reach the phone this way (no Claude session) — it falls back to a
+Windows toast + `logs/alerts.log`, or SMTP if configured.
 
 ## Layout
 
