@@ -12,20 +12,28 @@ this repo or via connected IBKR tools. They are enforced in code by
    2026-07-23). Positions may stack up to 80% of equity combined; at least
    20% of equity always stays in cash. Enforced via
    `strategy.risk.portfolio_headroom`.
-2. **Minimum 1:3 risk/reward.** Reject any setup whose target is less than
-   3x the stop distance from entry.
-3. **Multi-indicator confirmation required.** A trade signal only counts if
-   ALL of these agree on the same direction (see `strategy/signals.py`):
-   EMA50/EMA200 trend, RSI(14) in the directional band, MACD(12,26,9)
-   alignment, and volume >= its 20-day average.
-4. **Score >= 90/100 to be tradeable** (added 2026-08-03). Every
+2. **Minimum risk/reward** — 1:3 for the gate strategy (target derived from
+   stop distance) or 1:2 for the pullback strategy, where the target is the
+   *actual* recent swing-high resistance rather than a derived multiple
+   (adopted 2026-08-04, see rule 8). Either way the target must clear its
+   required R:R or the trade doesn't fire — `strategy.risk.size_position`
+   enforces this whether the target is derived or explicitly given.
+3. **Multi-indicator confirmation required (gate strategy).** A trade
+   signal only counts if ALL of these agree on the same direction (see
+   `strategy/signals.py`): EMA50/EMA200 trend, RSI(14) in the directional
+   band, MACD(12,26,9) alignment, and volume >= its 20-day average.
+4. **Score >= 70/100 to be tradeable (gate strategy only).** Every
    gate-passing candidate is ranked 0-100 by `strategy/scoring.py` (trend
-   strength, momentum quality, volume surge, risk quality). Passing the
-   4-indicator gate is necessary but not sufficient — a valid-but-weak
-   setup below the threshold is not drafted.
-5. **Max 2% of net liquidation at risk per trade**, in addition to the 20%
-   notional cap — whichever is tighter binds. Enforced in
-   `strategy.risk.size_position` via its `net_liquidation` argument.
+   strength, momentum quality, volume surge, risk quality). Recalibrated
+   from 90 on 2026-08-04 — backtested against 506 gate-passing bars across
+   85 symbols over ~1 year, the max score ever achieved was 82.3, so 90 was
+   unreachable and silently meant the system would never trade at all.
+5. **Max 1% of net liquidation at risk per trade** (tightened from 2% on
+   2026-08-04 per the owner-delegated Humbled Trader methodology; 2%
+   remains the hard ceiling this must never be raised above without the
+   owner), in addition to the 20% notional cap — whichever is tighter
+   binds. Enforced in `strategy.risk.size_position` via its
+   `net_liquidation` argument.
 6. **Portfolio circuit breakers** (`strategy/risk_limits.py`): new entries
    halt automatically if the account hits its daily loss limit (3%), weekly
    drawdown limit (6%), monthly drawdown limit (10%), max concurrent
@@ -35,6 +43,14 @@ this repo or via connected IBKR tools. They are enforced in code by
    drops any trailing daily bar whose US regular session hasn't closed yet
    (America/New_York wall-clock, not a UTC-hour proxy) — added after a
    stale mid-session bar produced a false gate failure on 2026-08-03.
+8. **Second long-signal source: trend-pullback strategy** (`strategy/pullback.py`,
+   added 2026-08-04, methodology owner-delegated to Humbled Trader's swing
+   approach). 200-SMA rising, pullback to the 8-EMA holding above the
+   200-SMA, reclaim with a higher low. Stop below the pullback low; target
+   the recent swing high (real resistance) at minimum 1:2, per rule 2 —
+   evaluated independently of the gate strategy every scan, long-only. Both
+   strategies' decisions are labeled `strategy=gate` / `strategy=pullback`
+   in the journal so performance can be compared per-strategy.
 
 ## Execution policy
 
@@ -74,11 +90,13 @@ target, quantity. One line, no fluff.
 - `ibkr/` — TWS connection (`client.py`), order helpers (`orders.py`),
   historical data (`data.py`), market scanner (`scanner.py`)
 - `strategy/` — indicator math (`indicators.py`), signal gate
-  (`signals.py`), candidate scoring (`scoring.py`), position sizing/risk
-  (`risk.py`), portfolio circuit breakers (`risk_limits.py`), in-trade
-  management: breakeven/trailing/partial-profit (`trade_management.py`),
-  bar-completeness validation (`data_quality.py`), config, and the SQLite
-  decision journal (`journal.py`, → `journal.sqlite` at repo root, gitignored)
+  (`signals.py`), trend-pullback strategy (`pullback.py`), candidate
+  scoring (`scoring.py`), position sizing/risk (`risk.py`), portfolio
+  circuit breakers (`risk_limits.py`), in-trade management:
+  breakeven/trailing/partial-profit (`trade_management.py`),
+  bar-completeness validation (`data_quality.py`), universe list
+  (`universe.py`), config, and the SQLite decision journal (`journal.py`,
+  → `journal.sqlite` at repo root, gitignored)
 - `backtest/` — no-lookahead multi-symbol backtester (signal on close,
   fill at next open, stop-first when stop and target share a bar)
 - `examples/` — runnable entry points (`connect_test.py`, `run_scan.py`,
