@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 
 from strategy.config import StrategyConfig
+from strategy.core_holdings import assert_core_etf
 
 
 class RiskRejected(Exception):
@@ -27,6 +28,106 @@ def portfolio_headroom(net_liquidation: float, gross_position_value: float, conf
     """Capital still deployable before the account hits its max-invested
     ceiling (e.g. 80% of equity). New entries must fit inside this."""
     return max(0.0, config.max_deployed_pct * net_liquidation - gross_position_value)
+
+
+@dataclass(frozen=True)
+class CoreHoldingPlan:
+    """A long-term index-ETF holding. Deliberately has no stop, target, or
+    risk_reward -- see size_core_holding for why those fields would be lies."""
+    symbol: str
+    entry: float
+    quantity: float
+    position_value: float
+    pct_of_available_funds: float
+    pct_of_equity: float
+    binding_cap: str  # "etf_notional" or "portfolio_headroom"
+
+
+def size_core_holding(
+    symbol: str,
+    price: float,
+    available_funds: float,
+    net_liquidation: float,
+    gross_position_value: float,
+    config: StrategyConfig,
+    fractional: bool = True,
+) -> CoreHoldingPlan:
+    """Size a buy-and-hold position in an approved broad-market index ETF.
+
+    This is a SEPARATE path from size_position, not a flag on it, because the
+    swing-trade sizing model does not apply and forcing it to would produce
+    numbers that are false:
+
+    * **No stop.** Buy-and-hold has no stop-loss by construction -- the whole
+      finding that motivated this strategy is that trading costs and timing
+      errors eat the returns. size_position *requires* a stop (it derives the
+      target and the position size from the stop distance), so it cannot
+      express this position at all.
+    * **No target.** There is no take-profit; the horizon is years.
+    * **The 1%-of-equity risk rule is therefore inapplicable, not waived.**
+      "Capital at risk" in that rule means "dollars lost if the stop fills".
+      With no stop that quantity is undefined -- it is not zero, and it is not
+      the full position value either. Reporting any number for it would be
+      making one up, so CoreHoldingPlan simply has no such field.
+
+    What DOES constrain this position, and is enforced here:
+
+    1. ``config.etf_max_position_pct`` of available funds (70%), permitted only
+       because the symbol is a whitelisted diversified index fund.
+    2. ``config.max_deployed_pct`` of net liquidation across ALL positions
+       (80%), so the cash buffer survives. Whichever binds first wins.
+
+    The drawdown circuit breakers in risk_limits.check_trade_allowed are NOT
+    applied here, on purpose. Those exist to stop a swing trader from
+    revenge-trading through a losing streak. Applied to a decades-horizon
+    index entry they would block buying *during a dip*, which is precisely
+    when a long-term holder wants to be buying, and would create a loop where
+    a falling market permanently forbids establishing the position.
+    """
+    sym = assert_core_etf(symbol)
+
+    if price <= 0:
+        raise ValueError("price must be positive")
+    if available_funds <= 0:
+        raise RiskRejected("no available funds")
+    if net_liquidation <= 0:
+        raise ValueError("net_liquidation must be positive")
+    if gross_position_value < 0:
+        raise ValueError("gross_position_value cannot be negative")
+
+    etf_notional = available_funds * config.etf_max_position_pct
+    headroom = portfolio_headroom(net_liquidation, gross_position_value, config)
+
+    if headroom <= 0:
+        raise RiskRejected(
+            f"portfolio already at its {config.max_deployed_pct:.0%} deployed cap: "
+            f"${gross_position_value:.2f} of ${net_liquidation:.2f} equity is invested, "
+            f"leaving no headroom for {sym}"
+        )
+
+    max_notional = min(etf_notional, headroom)
+    binding_cap = "etf_notional" if etf_notional <= headroom else "portfolio_headroom"
+
+    quantity = _floor_qty(max_notional / price, fractional)
+
+    min_qty = 1e-6 if fractional else 1.0
+    if quantity < min_qty:
+        raise RiskRejected(
+            f"position too small: ${max_notional:.2f} available for {sym} "
+            f"can't buy {'a fractional share' if fractional else 'even 1 share'} "
+            f"at ${price:.2f} (binding cap: {binding_cap})"
+        )
+
+    position_value = quantity * price
+    return CoreHoldingPlan(
+        symbol=sym,
+        entry=price,
+        quantity=quantity,
+        position_value=position_value,
+        pct_of_available_funds=position_value / available_funds,
+        pct_of_equity=position_value / net_liquidation,
+        binding_cap=binding_cap,
+    )
 
 
 @dataclass(frozen=True)

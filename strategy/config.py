@@ -11,6 +11,11 @@ from dataclasses import dataclass
 class StrategyConfig:
     # Position sizing
     max_position_pct: float = 0.20  # never commit more than 20% of available funds to one trade
+    etf_max_position_pct: float = 0.70  # raised cap for APPROVED broad-market index ETFs only
+    # (owner decision 2026-08-05). The 20% cap limits single-issuer blowup risk,
+    # which doesn't apply the same way to a fund holding 100+ companies. Eligibility
+    # is by explicit whitelist in strategy/core_holdings.py, NOT by asset class --
+    # leveraged/inverse ETFs (TQQQ, SQQQ, ...) are ETFs too and are never eligible.
     max_deployed_pct: float = 0.80  # total invested across ALL positions; >=20% of equity stays cash
     min_risk_reward: float = 3.0  # gate strategy: reject setups below 1:3 (derived target)
     pullback_min_rr: float = 2.0  # pullback strategy: target is the PRIOR SWING HIGH (real

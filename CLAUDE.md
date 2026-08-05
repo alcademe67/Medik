@@ -8,6 +8,17 @@ this repo or via connected IBKR tools. They are enforced in code by
 
 1. **Max 20% of available funds per trade.** Never size a single position
    above 20% of the account's current available funds (not net liquidation).
+1a. **EXCEPTION — approved index ETFs may go to 70% of available funds**
+   (owner decision, 2026-08-05, adopting QQQ buy-and-hold as the account's
+   core strategy). Eligibility is by **explicit whitelist**
+   (`strategy/core_holdings.CORE_ETFS`), never by asset class: the owner said
+   "exempt ETFs", but TQQQ/SQQQ/QLD/QID are ETFs too, and a 3x daily-reset
+   fund is not a milder QQQ — it decays in chop and is structurally unfit for
+   buy-and-hold. The 20% cap exists to limit *single-issuer* blowup risk,
+   which is why relaxing it for a 100-company index fund is coherent and
+   relaxing it for a leveraged derivative would invert its purpose. Adding a
+   symbol to the whitelist is a deliberate act, not an inference.
+   Enforced by `strategy.risk.size_core_holding`.
 1b. **Max 80% of the account deployed in total** (rule updated by the owner,
    2026-07-23). Positions may stack up to 80% of equity combined; at least
    20% of equity always stays in cash. Enforced via
@@ -125,6 +136,43 @@ same way, (b) trade far less frequently so commission drag matters less, or
 structure and treat this repo as research/paper-trading infrastructure.
 Any future strategy change MUST be re-run through
 `net_of_commission.py` before it is described as working.
+
+## ADOPTED STRATEGY (2026-08-05): QQQ buy-and-hold
+
+Following the research above, the owner chose **QQQ buy-and-hold** as the
+account's core strategy, exempted index ETFs from the 20% per-trade cap, and
+set the ETF cap at **70% of available funds** (rules 1a above).
+
+**This strategy is "do nothing", and that is the point.** It won the
+comparison precisely because it does not trade: 1 fill, $1.00 of commission,
++17.3% CAGR, versus every active overlay tested. The failure mode here is not
+missing a signal — it is *intervening*. Do not propose rotations, overlays,
+timing filters, or "improvements" to it absent new evidence run through
+`net_of_commission.py`.
+
+Mechanics:
+
+- Sizing goes through `strategy.risk.size_core_holding`, a **separate path**
+  from `size_position` — not a flag on it. Buy-and-hold has no stop and no
+  target, and `size_position` derives both the target and the size *from the
+  stop distance*, so it structurally cannot express this position.
+- **Rule 5 (max 1% of net liquidation at risk) is INAPPLICABLE here, not
+  waived.** "Capital at risk" in that rule means "dollars lost if the stop
+  fills". With no stop, that quantity is undefined — it is not zero, and not
+  the position value either. `CoreHoldingPlan` therefore has no such field;
+  don't invent one. Risk is controlled instead by diversification (100
+  companies), the 70% cap, and the 20% cash floor.
+- The **80% deployed cap (rule 1b) still binds** and is enforced inline by
+  `size_core_holding`; whichever of the two caps is tighter wins.
+- The **drawdown circuit breakers are deliberately NOT applied** to core
+  holdings. They exist to stop a swing trader revenge-trading a losing
+  streak; applied to a decades-horizon index entry they would forbid buying
+  *during a dip* and create a loop where a falling market permanently blocks
+  establishing the position.
+- Monitoring is `examples/check_core_holdings.py` — a **report, not a trading
+  loop**, with no sell trigger. A drawdown line in it is never a sell signal:
+  QQQ fell 22.9% inside the window that returned +121.8%.
+- Execution policy is unchanged — Claude drafts, the owner submits.
 
 ## Execution policy
 
