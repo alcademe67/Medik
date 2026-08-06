@@ -181,7 +181,27 @@ class KuCoinClient:
     def cancel_order(self, order_id: str) -> dict:
         return self._request("DELETE", f"/api/v1/orders/{order_id}", auth=True)
 
-    def list_orders(self, status: str = "active", symbol: Optional[str] = None) -> dict:
+    def list_orders(
+        self,
+        status: str = "active",
+        symbol: Optional[str] = None,
+        current_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+    ) -> dict:
+        """Return one page of the paginated order list.
+
+        The response envelope carries ``items`` plus ``currentPage`` /
+        ``totalPage``; callers wanting every order should use
+        ``kucoin.orders.open_orders``, which walks the pages.
+        """
         return self._request(
-            "GET", "/api/v1/orders", params={"status": status, "symbol": symbol}, auth=True
+            "GET",
+            "/api/v1/orders",
+            params={
+                "status": status,
+                "symbol": symbol,
+                "currentPage": current_page,
+                "pageSize": page_size,
+            },
+            auth=True,
         )
