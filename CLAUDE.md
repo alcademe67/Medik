@@ -214,6 +214,39 @@ from previous sessions (e.g. GTC stops) stay working until explicitly
 cancelled *in the app*: there is no cancel/modify tool on the MCP
 connector, so Claude cannot clear them.
 
+### TWS order-entry gotchas (learned expensively, 2026-08-06)
+
+- **`get_account_orders` UNDER-REPORTS working orders.** It showed 2 rows
+  while TWS showed 6, and missed a 100-share order entirely. **The TWS
+  Orders tab is authoritative; the connector is not.** On 2026-08-06 Claude
+  built a theory that the connector was stale and told the owner their
+  stops were cancelled when they were live — the connector had been right.
+  When the connector and the owner's screen disagree, ask for a screenshot;
+  do not pick whichever supports the current theory.
+- **TWS will not change Order Type on a working order.** The Order Type
+  dropdown is greyed out on an existing ticket — only price fields are
+  editable. Editing a STP's price three times leaves it a STP. Changing
+  STP→LMT requires cancel + fresh order. A sell *stop* above the market is
+  actively harmful: it converts to a market order the moment price rises
+  into it.
+- **The Order Entry panel pre-fills QTY 100.** This produced a live
+  `SELL 100 JPM LMT 357.00` — ~$35,700 against a $296 account and a 0.09
+  share position — which would have been a naked short in a TFSA that
+  cannot short. **Always check the value estimate next to SUBMIT** (`≈ 32.13
+  USD`, not `≈ 35.7K USD`) before transmitting. That figure catches a wrong
+  quantity faster than reading the qty field.
+- **Price sell limits BELOW the bid, never at it.** A limit at the bid goes
+  un-marketable on a single downtick; four successive F drafts missed this
+  way as the bid drifted a cent at a time. A sell limit below the bid still
+  fills AT the bid — the limit is a floor, not the sale price — so the
+  buffer is free. Same logic inverted for buys.
+- **Duplicate orders accumulate silently.** Repeated attempts left three
+  identical `F STP 13.70` orders (27 shares against a 9-share position)
+  plus a stale `F LMT 14.60` that was holding the shares and blocking every
+  new sell. When orders behave inexplicably, list ALL working orders first
+  — `examples/cancel_open_orders.py` (dry run) reads TWS directly — and
+  prefer cancelling everything and rebuilding over patching a bad list.
+
 ## Execution policy
 
 - **Claude never places live orders autonomously.** Orders are drafted
