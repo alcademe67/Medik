@@ -243,6 +243,15 @@ connector, so Claude cannot clear them.
 
 ## Account facts (verified, stable)
 
+- **The owner is in Vancouver, British Columbia — Pacific time**
+  (America/Vancouver, PDT/PST). This container runs on **UTC**, so neither
+  the owner's clock nor the container's is the market clock. US regular
+  session 09:30-16:00 ET = **06:30-13:00 PT** — the close lands early
+  in the owner's afternoon. Always convert explicitly (America/New_York
+  for the market, America/Vancouver when speaking to the owner) and
+  re-read the current date on every wake: sessions here span days, and
+  assuming "now" is unchanged since the last message produced a wrong
+  "market is closed" call on 2026-08-06.
 - **TFSA, base USD, LONG-ONLY** — cannot short. SELL/short signals from the
   gate are journaled but must never be traded or drafted.
 - **Fractional shares are enabled** and are essential: the account is ~$300,
