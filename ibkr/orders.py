@@ -43,6 +43,38 @@ def place_limit_order(
         )
 
     contract = _qualified_stock(ib, symbol, exchange, currency)
+    return place_limit_order_on_contract(
+        ib, contract, action, quantity, limit_price, confirm=confirm
+    )
+
+
+def place_limit_order_on_contract(
+    ib: IB,
+    contract,
+    action: str,
+    quantity: float,
+    limit_price: float,
+    confirm: bool = False,
+) -> Trade:
+    """Limit order against an already-qualified contract.
+
+    Use this when the contract came from ib.positions() or another source
+    that already carries a conId — re-qualifying by symbol can resolve to a
+    different listing (wrong exchange or currency) than the one actually
+    held. Same confirm=True gate as place_limit_order.
+    """
+    if action not in VALID_ACTIONS:
+        raise ValueError(f"action must be one of {VALID_ACTIONS}")
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
+    if limit_price != limit_price or limit_price <= 0:  # NaN-safe
+        raise ValueError(f"limit_price must be a positive number, got {limit_price!r}")
+    if not confirm:
+        raise OrderRejected(
+            f"Refusing to place {action} {quantity} {contract.symbol} @ {limit_price}: "
+            "call with confirm=True to actually submit this live order."
+        )
+
     order = LimitOrder(action, quantity, limit_price)
     trade = ib.placeOrder(contract, order)
     ib.sleep(1)
