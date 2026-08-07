@@ -104,12 +104,32 @@ place_limit_order(client, "BTC-USDT", "buy", size="0.001", price="50000", confir
 
 ## Safety model
 
-- No order is ever sent without an explicit `confirm=True`; omitting it
-  raises `OrderRejected` before any network call.
+- No order is ever placed *or cancelled* without an explicit
+  `confirm=True`; omitting it raises `OrderRejected` before any network
+  call.
 - The order example is a dry run unless the `LIVE=1` environment variable
   is set.
 - Inputs (side, symbol shape, positive size/price, size-vs-funds) are
   validated locally before submission.
+- A dropped connection on an order POST is never retried, since the order
+  may already have reached KuCoin and a replay could submit it twice.
+  Rate-limited requests are retried for any method, because a throttled
+  request was refused before it executed.
+
+## Reliability
+
+`KuCoinClient` handles the two failures that most often break a
+long-running loop:
+
+- **Clock drift.** KuCoin rejects a request whose `KC-API-TIMESTAMP` is
+  more than a few seconds from its own clock, so a machine with a
+  slightly wrong time fails every signed call. The client measures the
+  offset once against `/api/v1/timestamp` and applies it when signing; a
+  rejected timestamp triggers one re-sync and retry. Pass
+  `sync_clock=False` to opt out, or call `synchronize_clock()` yourself.
+- **Rate limits and transient errors.** Retried with exponential backoff,
+  bounded by `max_retries` (default 3). Tune with
+  `KuCoinClient(max_retries=..., retry_backoff=...)`.
 
 ## Tests
 

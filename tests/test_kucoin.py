@@ -1,5 +1,8 @@
 import json
+import time
 import unittest
+
+import requests
 
 from kucoin.client import KuCoinAPIError, KuCoinClient, MissingCredentials
 from kucoin.data import recent_candles
@@ -108,7 +111,7 @@ class TransportTests(unittest.TestCase):
     def test_query_params_are_appended_and_none_dropped(self):
         session = FakeSession(data={"price": "50000"})
         client = KuCoinClient(api_key="", api_secret="", api_passphrase="", session=session)
-        client.candles("BTC-USDT", type="1hour", start_at=None, end_at=None)
+        client.candles("BTC-USDT", interval="1hour", start_at=None, end_at=None)
         self.assertEqual(
             session.calls[0]["url"],
             "https://api.kucoin.com/api/v1/market/candles?symbol=BTC-USDT&type=1hour",
@@ -133,10 +136,234 @@ class TransportTests(unittest.TestCase):
             session=session,
         )
         client.accounts(currency="USDT")
-        headers = session.calls[0]["headers"]
+        # calls[0] is the lazy clock sync; the signed request is the last one.
+        headers = session.calls[-1]["headers"]
         self.assertIn("KC-API-SIGN", headers)
         self.assertEqual(headers["KC-API-KEY"], "test-key")
-        self.assertTrue(session.calls[0]["url"].endswith("/api/v1/accounts?currency=USDT"))
+        self.assertTrue(session.calls[-1]["url"].endswith("/api/v1/accounts?currency=USDT"))
+
+    def test_order_id_is_url_escaped(self):
+        session = FakeSession(data={})
+        client = KuCoinClient(
+            api_key="k", api_secret="s", api_passphrase="p", session=session, sync_clock=False
+        )
+        client.cancel_order("weird/id?x=1")
+        self.assertTrue(session.calls[-1]["url"].endswith("/api/v1/orders/weird%2Fid%3Fx%3D1"))
+
+
+class ClockSyncTests(unittest.TestCase):
+    """A laptop with a drifted clock must not fail every signed request."""
+
+    class ClockSession:
+        """Returns a server time 60s ahead of local on the timestamp endpoint."""
+
+        SKEW_MS = 60_000
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, data=None, headers=None, timeout=None):
+            self.calls.append({"method": method, "url": url, "headers": headers})
+            if url.endswith("/api/v1/timestamp"):
+                server = int(time.time() * 1000) + self.SKEW_MS
+                return FakeResponse({"code": "200000", "data": server})
+            return FakeResponse({"code": "200000", "data": []})
+
+    def make_client(self, session, **kwargs):
+        return KuCoinClient(
+            api_key="k", api_secret="s", api_passphrase="p", session=session, **kwargs
+        )
+
+    def test_offset_is_applied_to_signed_timestamp(self):
+        session = self.ClockSession()
+        client = self.make_client(session)
+        client.accounts()
+        sent = int(session.calls[-1]["headers"]["KC-API-TIMESTAMP"])
+        local = int(time.time() * 1000)
+        # The signed timestamp should track KuCoin's clock, not the local one.
+        self.assertGreater(sent - local, self.ClockSession.SKEW_MS // 2)
+
+    def test_clock_is_synced_once_not_per_request(self):
+        session = self.ClockSession()
+        client = self.make_client(session)
+        client.accounts()
+        client.accounts()
+        syncs = [c for c in session.calls if c["url"].endswith("/api/v1/timestamp")]
+        self.assertEqual(len(syncs), 1)
+
+    def test_sync_can_be_disabled(self):
+        session = self.ClockSession()
+        self.make_client(session, sync_clock=False).accounts()
+        self.assertEqual([c for c in session.calls if c["url"].endswith("/timestamp")], [])
+
+    def test_failed_sync_falls_back_to_local_clock(self):
+        class BrokenClockSession(self.ClockSession):
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls.append({"method": method, "url": url, "headers": headers})
+                if url.endswith("/api/v1/timestamp"):
+                    return FakeResponse({"code": "500000", "msg": "boom"})
+                return FakeResponse({"code": "200000", "data": []})
+
+        session = BrokenClockSession()
+        self.make_client(session).accounts()  # must not raise
+        sent = int(session.calls[-1]["headers"]["KC-API-TIMESTAMP"])
+        self.assertLess(abs(sent - int(time.time() * 1000)), 5_000)
+
+    def test_rejected_timestamp_triggers_one_resync_and_retry(self):
+        class SkewRejectingSession(self.ClockSession):
+            def __init__(self):
+                super().__init__()
+                self.account_calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls.append({"method": method, "url": url, "headers": headers})
+                if url.endswith("/api/v1/timestamp"):
+                    return FakeResponse({"code": "200000", "data": int(time.time() * 1000)})
+                self.account_calls += 1
+                if self.account_calls == 1:
+                    return FakeResponse({"code": "400002", "msg": "KC-API-TIMESTAMP Invalid"})
+                return FakeResponse({"code": "200000", "data": ["ok"]})
+
+        session = SkewRejectingSession()
+        self.assertEqual(self.make_client(session).accounts(), ["ok"])
+        self.assertEqual(session.account_calls, 2)
+
+    def test_persistent_skew_rejection_eventually_raises(self):
+        class AlwaysSkewedSession(self.ClockSession):
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls.append({"method": method, "url": url, "headers": headers})
+                if url.endswith("/api/v1/timestamp"):
+                    return FakeResponse({"code": "200000", "data": int(time.time() * 1000)})
+                return FakeResponse({"code": "400002", "msg": "KC-API-TIMESTAMP Invalid"})
+
+        with self.assertRaises(KuCoinAPIError) as ctx:
+            self.make_client(AlwaysSkewedSession()).accounts()
+        self.assertEqual(ctx.exception.code, "400002")
+
+
+class RetryTests(unittest.TestCase):
+    """Rate limits and transient failures must not kill a long-running loop."""
+
+    def make_client(self, session, **kwargs):
+        return KuCoinClient(
+            api_key="k",
+            api_secret="s",
+            api_passphrase="p",
+            session=session,
+            sync_clock=False,
+            retry_backoff=0,  # keep the suite fast
+            **kwargs,
+        )
+
+    def test_rate_limited_get_is_retried_then_succeeds(self):
+        class ThrottledSession:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls += 1
+                if self.calls < 3:
+                    return FakeResponse({"code": "429000", "msg": "Too Many Requests"})
+                return FakeResponse({"code": "200000", "data": "ok"})
+
+        session = ThrottledSession()
+        self.assertEqual(self.make_client(session).server_time(), "ok")
+        self.assertEqual(session.calls, 3)
+
+    def test_rate_limit_gives_up_after_max_retries(self):
+        class AlwaysThrottled:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls += 1
+                return FakeResponse({"code": "429000", "msg": "Too Many Requests"})
+
+        session = AlwaysThrottled()
+        with self.assertRaises(KuCoinAPIError):
+            self.make_client(session, max_retries=2).server_time()
+        self.assertEqual(session.calls, 3)  # initial attempt plus two retries
+
+    def test_rate_limited_post_is_retried(self):
+        # A throttled request was refused before executing, so replaying an
+        # order POST cannot double-submit.
+        class ThrottledOnce:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return FakeResponse({"code": "429000", "msg": "Too Many Requests"})
+                return FakeResponse({"code": "200000", "data": {"orderId": "x"}})
+
+        session = ThrottledOnce()
+        self.assertEqual(self.make_client(session).create_order({}), {"orderId": "x"})
+        self.assertEqual(session.calls, 2)
+
+    def test_network_error_on_get_is_retried(self):
+        class FlakySession:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise requests.ConnectionError("reset")
+                return FakeResponse({"code": "200000", "data": "ok"})
+
+        session = FlakySession()
+        self.assertEqual(self.make_client(session).server_time(), "ok")
+        self.assertEqual(session.calls, 2)
+
+    def test_network_error_on_post_is_never_retried(self):
+        # The order may already have reached KuCoin, so a replay risks a
+        # duplicate submission. This is the important one.
+        class DroppedSession:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls += 1
+                raise requests.Timeout("no response")
+
+        session = DroppedSession()
+        with self.assertRaises(requests.Timeout):
+            self.make_client(session).create_order({"clientOid": "abc"})
+        self.assertEqual(session.calls, 1)
+
+    def test_server_error_on_post_is_not_retried(self):
+        class ServerErrorSession:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls += 1
+                resp = FakeResponse({}, status_code=502)
+                resp.json = lambda: (_ for _ in ()).throw(ValueError("not json"))
+                resp.raise_for_status = lambda: (_ for _ in ()).throw(
+                    requests.HTTPError("502 Bad Gateway")
+                )
+                return resp
+
+        session = ServerErrorSession()
+        with self.assertRaises(requests.HTTPError):
+            self.make_client(session).create_order({})
+        self.assertEqual(session.calls, 1)
+
+    def test_business_error_is_not_retried(self):
+        class InvalidSymbolSession:
+            def __init__(self):
+                self.calls = 0
+
+            def request(self, method, url, data=None, headers=None, timeout=None):
+                self.calls += 1
+                return FakeResponse({"code": "400100", "msg": "Invalid symbol"})
+
+        session = InvalidSymbolSession()
+        with self.assertRaises(KuCoinAPIError):
+            self.make_client(session).server_time()
+        self.assertEqual(session.calls, 1)
 
 
 class OrderSafetyTests(unittest.TestCase):
@@ -194,6 +421,25 @@ class OrderSafetyTests(unittest.TestCase):
     def test_cancel_requires_order_id(self):
         with self.assertRaises(OrderRejected):
             cancel_order(FakeOrderClient(), "")
+
+    def test_cancel_requires_confirm(self):
+        class RecordingClient(FakeOrderClient):
+            def __init__(self):
+                super().__init__()
+                self.cancelled = []
+
+            def cancel_order(self, order_id):
+                self.cancelled.append(order_id)
+                return {"cancelledOrderIds": [order_id]}
+
+        client = RecordingClient()
+        with self.assertRaises(OrderRejected):
+            cancel_order(client, "order-1")
+        self.assertEqual(client.cancelled, [])
+
+    def test_confirmed_cancel_is_submitted(self):
+        result = cancel_order(FakeOrderClient(), "order-1", confirm=True)
+        self.assertEqual(result["cancelledOrderIds"], ["order-1"])
 
 
 class NumericFormattingTests(unittest.TestCase):
@@ -310,7 +556,7 @@ class OpenOrdersPaginationTests(unittest.TestCase):
 class CandleParsingTests(unittest.TestCase):
     def test_candles_parsed_and_sorted_oldest_first(self):
         class CandleClient:
-            def candles(self, symbol, type="1hour", start_at=None, end_at=None):
+            def candles(self, symbol, interval="1hour", start_at=None, end_at=None):
                 # KuCoin returns newest first, values as strings
                 return [
                     ["1700003600", "101", "102", "103", "100", "5", "500"],
@@ -324,7 +570,7 @@ class CandleParsingTests(unittest.TestCase):
 
     def test_null_data_returns_empty_list(self):
         class EmptyRangeClient:
-            def candles(self, symbol, type="1hour", start_at=None, end_at=None):
+            def candles(self, symbol, interval="1hour", start_at=None, end_at=None):
                 return None  # KuCoin sends data: null for a range with no candles
 
         self.assertEqual(recent_candles(EmptyRangeClient(), "BTC-USDT"), [])

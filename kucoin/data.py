@@ -23,14 +23,14 @@ def best_bid_ask(client: KuCoinClient, symbol: str) -> Tuple[float, float]:
 def recent_candles(
     client: KuCoinClient,
     symbol: str,
-    type: str = "1hour",
+    interval: str = "1hour",
     limit: int = 100,
     start_at: Optional[int] = None,
     end_at: Optional[int] = None,
 ) -> List[dict]:
     """Return up to ``limit`` parsed candles, oldest first."""
     # KuCoin sends data: null (not []) for a range containing no candles.
-    raw = client.candles(symbol, type=type, start_at=start_at, end_at=end_at) or []
+    raw = client.candles(symbol, interval=interval, start_at=start_at, end_at=end_at) or []
     parsed = []
     for row in raw[:limit]:
         candle = dict(zip(CANDLE_FIELDS, row))

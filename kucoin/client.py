@@ -15,12 +15,25 @@ import json
 import os
 import time
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 
 DEFAULT_BASE_URL = "https://api.kucoin.com"
 DEFAULT_TIMEOUT = 10.0
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BACKOFF = 1.0
+
+# KuCoin refuses a request whose KC-API-TIMESTAMP drifts too far from its
+# own clock, which is what a laptop with a slightly wrong time looks like.
+CLOCK_SKEW_CODES = frozenset({"400002"})
+RATE_LIMIT_CODES = frozenset({"429000"})
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# Replaying these is harmless: a GET has no effect and cancelling an
+# already-cancelled order is a no-op. A POST is deliberately excluded -
+# see the comment in _request.
+IDEMPOTENT_METHODS = frozenset({"GET", "DELETE"})
 
 
 class KuCoinAPIError(RuntimeError):
@@ -52,6 +65,9 @@ class KuCoinClient:
         base_url: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
         session: Optional[requests.Session] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_backoff: float = DEFAULT_RETRY_BACKOFF,
+        sync_clock: bool = True,
     ):
         self.api_key = api_key if api_key is not None else os.getenv("KUCOIN_API_KEY", "")
         self.api_secret = api_secret if api_secret is not None else os.getenv("KUCOIN_API_SECRET", "")
@@ -61,11 +77,43 @@ class KuCoinClient:
         resolved_base = base_url if base_url is not None else os.getenv("KUCOIN_BASE_URL", DEFAULT_BASE_URL)
         self.base_url = resolved_base.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
+        self.sync_clock = sync_clock
+        self._clock_offset_ms: Optional[int] = None
         self._session = session or requests.Session()
 
     @property
     def has_credentials(self) -> bool:
         return bool(self.api_key and self.api_secret and self.api_passphrase)
+
+    # ------------------------------------------------------------------
+    # Clock
+    # ------------------------------------------------------------------
+
+    def synchronize_clock(self) -> int:
+        """Measure and store the offset between the local and KuCoin clocks.
+
+        Called lazily before the first signed request. Returns the offset
+        in milliseconds (positive when the local clock is behind).
+        """
+        before = int(time.time() * 1000)
+        server = int(self.server_time())
+        after = int(time.time() * 1000)
+        # Compare against the midpoint of the round trip rather than
+        # either end, so network latency does not skew the offset.
+        self._clock_offset_ms = server - (before + after) // 2
+        return self._clock_offset_ms
+
+    def _now_ms(self) -> int:
+        if self._clock_offset_ms is None and self.sync_clock:
+            try:
+                self.synchronize_clock()
+            except (KuCoinAPIError, requests.RequestException, TypeError, ValueError):
+                # Never let a failed sync block signing - fall back to the
+                # local clock, which is what we would have used anyway.
+                self._clock_offset_ms = 0
+        return int(time.time() * 1000) + (self._clock_offset_ms or 0)
 
     # ------------------------------------------------------------------
     # Signing
@@ -87,7 +135,7 @@ class KuCoinClient:
                 "Set KUCOIN_API_KEY, KUCOIN_API_SECRET and KUCOIN_API_PASSPHRASE "
                 "to call private endpoints"
             )
-        ts = timestamp or str(int(time.time() * 1000))
+        ts = timestamp or str(self._now_ms())
         str_to_sign = f"{ts}{method.upper()}{path_with_query}{body}"
         return {
             "KC-API-KEY": self.api_key,
@@ -109,30 +157,86 @@ class KuCoinClient:
         body: Optional[dict] = None,
         auth: bool = False,
     ) -> Any:
+        method = method.upper()
         query = ""
         if params:
             filtered = {k: v for k, v in params.items() if v is not None}
             if filtered:
                 query = "?" + urlencode(filtered)
         body_str = json.dumps(body) if body is not None else ""
-        headers = {"Content-Type": "application/json"}
-        if auth:
-            headers.update(self._auth_headers(method, path + query, body_str))
-        resp = self._session.request(
-            method,
-            f"{self.base_url}{path}{query}",
-            data=body_str if body is not None else None,
-            headers=headers,
-            timeout=self.timeout,
-        )
-        try:
-            payload = resp.json()
-        except ValueError:
-            resp.raise_for_status()
-            raise KuCoinAPIError(str(resp.status_code), resp.text[:200])
-        if payload.get("code") != "200000":
-            raise KuCoinAPIError(str(payload.get("code")), str(payload.get("msg", resp.text[:200])))
-        return payload.get("data")
+        url = f"{self.base_url}{path}{query}"
+
+        attempt = 0
+        resynced = False
+        while True:
+            # Rebuilt every attempt: the signature covers a timestamp, so a
+            # replay has to be signed afresh or KuCoin rejects it as stale.
+            headers = {"Content-Type": "application/json"}
+            if auth:
+                headers.update(self._auth_headers(method, path + query, body_str))
+
+            try:
+                resp = self._session.request(
+                    method,
+                    url,
+                    data=body_str if body is not None else None,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+            except requests.RequestException:
+                # A POST that times out may still have reached the exchange,
+                # so replaying it could submit a second order. Only methods
+                # that are safe to repeat get retried here.
+                if method in IDEMPOTENT_METHODS and attempt < self.max_retries:
+                    attempt += 1
+                    self._backoff(attempt)
+                    continue
+                raise
+
+            try:
+                payload = resp.json()
+            except ValueError:
+                if self._retryable_status(resp.status_code, method) and attempt < self.max_retries:
+                    attempt += 1
+                    self._backoff(attempt)
+                    continue
+                resp.raise_for_status()
+                raise KuCoinAPIError(str(resp.status_code), resp.text[:200])
+
+            code = str(payload.get("code"))
+            if code == "200000":
+                return payload.get("data")
+
+            # A rate-limited request was refused before it executed, so
+            # replaying it is safe for any method, POST included.
+            if code in RATE_LIMIT_CODES and attempt < self.max_retries:
+                attempt += 1
+                self._backoff(attempt)
+                continue
+
+            # A rejected timestamp means our clock drifted. Re-measure the
+            # offset and try once more before giving up.
+            if code in CLOCK_SKEW_CODES and auth and not resynced:
+                resynced = True
+                try:
+                    self.synchronize_clock()
+                except (KuCoinAPIError, requests.RequestException, TypeError, ValueError):
+                    pass
+                else:
+                    continue
+
+            raise KuCoinAPIError(code, str(payload.get("msg", resp.text[:200])))
+
+    def _retryable_status(self, status_code: int, method: str) -> bool:
+        if status_code not in RETRYABLE_STATUS:
+            return False
+        # 429 means the request was throttled, not executed, so even a POST
+        # can be replayed; a 5xx leaves the outcome unknown.
+        return status_code == 429 or method in IDEMPOTENT_METHODS
+
+    def _backoff(self, attempt: int) -> None:
+        if self.retry_backoff:
+            time.sleep(self.retry_backoff * (2 ** (attempt - 1)))
 
     # ------------------------------------------------------------------
     # Public endpoints (no credentials required)
@@ -153,33 +257,40 @@ class KuCoinClient:
     def candles(
         self,
         symbol: str,
-        type: str = "1hour",
+        interval: str = "1hour",
         start_at: Optional[int] = None,
         end_at: Optional[int] = None,
     ) -> list:
+        """Fetch raw candles. ``interval`` is KuCoin's ``type`` field, e.g. '1hour'."""
         return self._request(
             "GET",
             "/api/v1/market/candles",
-            params={"symbol": symbol, "type": type, "startAt": start_at, "endAt": end_at},
+            params={"symbol": symbol, "type": interval, "startAt": start_at, "endAt": end_at},
         )
 
     # ------------------------------------------------------------------
     # Private endpoints (credentials required)
     # ------------------------------------------------------------------
 
-    def accounts(self, currency: Optional[str] = None, type: Optional[str] = None) -> list:
+    def accounts(self, currency: Optional[str] = None, account_type: Optional[str] = None) -> list:
+        """List accounts. ``account_type`` is KuCoin's ``type``, e.g. 'trade'."""
         return self._request(
-            "GET", "/api/v1/accounts", params={"currency": currency, "type": type}, auth=True
+            "GET",
+            "/api/v1/accounts",
+            params={"currency": currency, "type": account_type},
+            auth=True,
         )
 
     def create_order(self, payload: dict) -> dict:
         return self._request("POST", "/api/v1/orders", body=payload, auth=True)
 
     def get_order(self, order_id: str) -> dict:
-        return self._request("GET", f"/api/v1/orders/{order_id}", auth=True)
+        return self._request("GET", f"/api/v1/orders/{quote(str(order_id), safe='')}", auth=True)
 
     def cancel_order(self, order_id: str) -> dict:
-        return self._request("DELETE", f"/api/v1/orders/{order_id}", auth=True)
+        return self._request(
+            "DELETE", f"/api/v1/orders/{quote(str(order_id), safe='')}", auth=True
+        )
 
     def list_orders(
         self,

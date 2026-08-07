@@ -1,8 +1,9 @@
 """Safety-gated order helpers for KuCoin spot trading.
 
-Every order-placing function requires ``confirm=True``. Without it the
-order is rejected locally before any network call is made, mirroring the
-safeguards used by the IBKR integration in this repository.
+Every function that changes order state - placing and cancelling alike -
+requires ``confirm=True``. Without it the call is rejected locally before
+any network request is made, mirroring the safeguards used by the IBKR
+integration in this repository.
 """
 
 from __future__ import annotations
@@ -109,9 +110,17 @@ def place_market_order(
     return client.create_order(payload)
 
 
-def cancel_order(client: KuCoinClient, order_id: str) -> dict:
+def cancel_order(client: KuCoinClient, order_id: str, confirm: bool = False) -> dict:
+    """Cancel a resting order. Refuses to submit unless confirm=True.
+
+    Cancelling is the safe direction, but the gate is here so the whole
+    order surface behaves the same way: nothing reaches the exchange
+    without an explicit confirm.
+    """
     if not order_id:
         raise OrderRejected("order_id is required")
+    if not confirm:
+        raise OrderRejected("refusing to cancel a live order without confirm=True")
     return client.cancel_order(order_id)
 
 
