@@ -174,6 +174,60 @@ Mechanics:
   QQQ fell 22.9% inside the window that returned +121.8%.
 - Execution policy is unchanged — Claude drafts, the owner submits.
 
+### CORE POSITION ESTABLISHED (2026-08-07)
+
+The QQQ core holding is **open**. Filled 08:27 PT / 11:27 ET:
+
+    BUY 0.2836 QQQ @ $722.74   commission $1.00   net $204.97
+
+Cost basis $726.27/sh including commission. At entry: 69.9% of available
+funds (ETF cap 70%), 70.2% of equity deployed (portfolio cap 80%), $87.21
+cash, $292.17 net liquidation. Both legacy positions were closed the same
+morning to fund it: F 9 @ $13.79 (−$6.91 realized), JPM 0.09 @ $355.64
+(+$0.02). Total commissions for the day $2.33.
+
+**This position is now in "do nothing" mode.** No stop, no target, no
+sell trigger. Monitoring is `examples/check_core_holdings.py`, a report.
+
+**"I bought high" is not a reason to act.** The owner said this minutes
+after the fill (QQQ was +1.14% on the day, filled 6c off the day high).
+The honest arithmetic: the entry was $5.78 above the session low, which on
+0.2836 shares is **$1.64**. Selling to re-buy costs $2.00 in commissions
+alone — *fixing it costs more than the error*, before considering that the
+re-entry might be higher still. Also worth saying: 52-week range is
+$555.60–$748.65, so the fill was 3.5% below the 52-week high; "day high"
+is not "high". And entry timing is specifically the thing the research
+found doesn't pay — the 200-day timing overlay, a disciplined attempt to
+buy lower, cost 3.6%/yr versus buy-and-hold. Answer this the same way if
+it recurs: quantify the gap, quantify the cost of correcting it, and say
+plainly that intervening is the failure mode of this strategy.
+
+### Order-routing reality (learned across 2026-08-05 → 08-07)
+
+- **`create_order_instruction` has never produced a fill.** Across two
+  sessions and many drafts, every instruction sat at `is_new: true` and
+  none reached the market; *every* order that actually executed was typed
+  into TWS by the owner. Treat the instruction queue as unreliable: draft
+  the parameters (symbol/action/qty/type/price/TIF) for manual TWS entry
+  and skip the tool, unless the owner reports it working.
+- **IB Gateway has NO order-entry UI.** It is an API bridge only — no
+  ticket, no watchlist, nothing to click. If the owner says "I don't see
+  it", check *which app is open*: on 2026-08-07 they had switched to
+  Gateway, which also logged TWS out (one login per username), so the
+  ticket they were looking for could not exist. The fix is to close
+  Gateway and reopen TWS.
+- **A stale limit is the most common self-inflicted delay.** QQQ moved
+  $716.96 → $722.74 (+0.8%) during roughly an hour of troubleshooting and
+  the order had to be repriced four times. Since a buy limit fills **at
+  the ask**, not at the limit, a wide buffer (~1% above the ask) is nearly
+  free — it costs only a slightly smaller share count, because sizing is
+  computed against the worst-case fill. Prefer the wide buffer.
+- **`examples/place_core_holding.py`** (added 2026-08-07) sidesteps the GUI
+  entirely: it reads live settled cash, sizes through `size_core_holding`,
+  prices off the live ask, refuses to run outside the regular session, and
+  submits only on a typed YES. Its offline logic is tested; its live
+  connect/quote/submit path has NOT been exercised yet.
+
 ### Two things learned while placing the first core order (2026-08-05)
 
 **"Never take a loss to make a trade."** The owner stated this preference
