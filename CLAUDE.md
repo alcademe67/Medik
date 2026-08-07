@@ -189,6 +189,46 @@ morning to fund it: F 9 @ $13.79 (−$6.91 realized), JPM 0.09 @ $355.64
 **This position is now in "do nothing" mode.** No stop, no target, no
 sell trigger. Monitoring is `examples/check_core_holdings.py`, a report.
 
+### WHEN TO SELL THE CORE HOLDING (policy, 2026-08-07)
+
+Asked directly by the owner. Buy-and-hold has **no sell rule derived from
+price**; it has sell reasons derived from the owner's life. There are
+exactly three, and none of them is a number on a screen:
+
+1. **The money is needed** — a real expense arrives. Sell at whatever
+   price exists that day. This is the ordinary case and requires no
+   analysis.
+2. **The holding stops being what was bought** — the fund is liquidated or
+   restructured, or the index methodology changes such that it is no
+   longer a broad, unleveraged, diversified fund. A 30% decline is *not* a
+   thesis break; it is what the asset does.
+3. **A structurally better fund is chosen** — e.g. moving to VOO/VTI for
+   broader coverage than the tech-heavy Nasdaq-100. A calm
+   portfolio-construction decision made once, not a timing call. Both are
+   already whitelisted in `core_holdings.CORE_ETFS`.
+
+**Explicitly NOT reasons to sell:** it fell; it rose a lot; it "looks
+toppy"; a scary headline; locking in gains; hitting a round percentage; a
+drawdown line in `check_core_holdings.py`; anyone forecasting a crash.
+
+**Also refuse to attach sell orders to this position** — no take-profit
+limit, no protective stop. A +10% take-profit inside the tested window
+would have exited within months and forgone the remaining ~112 percentage
+points; any meaningful stop would have sold at the bottom of the 22.9%
+drawdown the position fully recovered from. Both convert buy-and-hold into
+timing, which lost in every configuration tested. GTC orders also linger
+and **cannot be cancelled from Claude's side** (no cancel/modify tool on
+the connector), so a forgotten sell order is a durable hazard.
+
+**State the downside honestly whenever the +121.8% figure is cited.** That
+came from a five-year, mostly tech-bull window. The Nasdaq-100 fell **83%**
+from 2000-2002 and took roughly fifteen years to regain its nominal peak.
+Nothing tested rules out a repeat. The conclusion is *not* to add a stop —
+it is that this position should only hold money with a genuinely long
+horizon (**if it is needed within ~3 years it should not be in QQQ at
+all**, but in cash or a GIC), and that broadening beyond one tech-heavy
+index is the right diversification move as the account grows.
+
 **"I bought high" is not a reason to act.** The owner said this minutes
 after the fill (QQQ was +1.14% on the day, filled 6c off the day high).
 The honest arithmetic: the entry was $5.78 above the session low, which on
