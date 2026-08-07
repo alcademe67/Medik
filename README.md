@@ -1,5 +1,7 @@
 # Medik
 
+[![tests](https://github.com/alcademe67/Medik/actions/workflows/tests.yml/badge.svg)](https://github.com/alcademe67/Medik/actions/workflows/tests.yml)
+
 KuCoin spot-trading automation toolkit: a minimal signed REST client,
 safety-gated order helpers, market-data utilities, and runnable examples.
 
@@ -22,7 +24,7 @@ safety-gated order helpers, market-data utilities, and runnable examples.
 
 ## Setup
 
-Python 3.8 or newer is required; the only dependencies are `requests` and
+Python 3.9 or newer is required; the only dependencies are `requests` and
 `python-dotenv`.
 
 **macOS / Linux**
@@ -114,3 +116,8 @@ place_limit_order(client, "BTC-USDT", "buy", size="0.001", price="50000", confir
 ```bash
 python -m unittest
 ```
+
+The suite is offline by design - it stubs the HTTP session instead of
+reaching KuCoin - so it needs no credentials and no network. GitHub
+Actions runs it on every push to `main` and every pull request, across
+Python 3.9 through 3.13 (`.github/workflows/tests.yml`).
