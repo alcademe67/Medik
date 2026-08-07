@@ -6,6 +6,7 @@ from kucoin.data import recent_candles
 from kucoin.orders import (
     OrderRejected,
     cancel_order,
+    open_orders,
     place_limit_order,
     place_market_order,
 )
@@ -195,6 +196,117 @@ class OrderSafetyTests(unittest.TestCase):
             cancel_order(FakeOrderClient(), "")
 
 
+class NumericFormattingTests(unittest.TestCase):
+    """Sizes and prices must reach KuCoin as plain decimals, never 1e-05."""
+
+    def submit(self, **kwargs):
+        client = FakeOrderClient()
+        place_limit_order(client, "BTC-USDT", "buy", confirm=True, **kwargs)
+        return client.orders[0]
+
+    def test_small_float_size_is_not_scientific_notation(self):
+        payload = self.submit(size=0.00001, price=50000)
+        self.assertEqual(payload["size"], "0.00001")
+        self.assertEqual(payload["price"], "50000")
+
+    def test_large_float_price_is_not_scientific_notation(self):
+        self.assertEqual(self.submit(size="1", price=1e17)["price"], "100000000000000000")
+
+    def test_scientific_notation_string_is_normalized(self):
+        self.assertEqual(self.submit(size="1e-5", price="50000")["size"], "0.00001")
+
+    def test_surrounding_whitespace_is_stripped(self):
+        self.assertEqual(self.submit(size=" 0.001 ", price="50000")["size"], "0.001")
+
+    def test_decimal_string_passes_through_unchanged(self):
+        self.assertEqual(self.submit(size="0.001", price="50000")["size"], "0.001")
+
+    def test_nan_size_rejected(self):
+        client = FakeOrderClient()
+        with self.assertRaises(OrderRejected):
+            place_limit_order(
+                client, "BTC-USDT", "buy", size=float("nan"), price="50000", confirm=True
+            )
+        self.assertEqual(client.orders, [])
+
+    def test_infinite_price_rejected(self):
+        with self.assertRaises(OrderRejected):
+            place_limit_order(
+                FakeOrderClient(), "BTC-USDT", "buy", size="1", price=float("inf"), confirm=True
+            )
+
+    def test_non_numeric_values_rejected(self):
+        for bad in (True, None, "abc", ""):
+            with self.subTest(value=bad):
+                with self.assertRaises(OrderRejected):
+                    place_limit_order(
+                        FakeOrderClient(), "BTC-USDT", "buy", size=bad, price="50000", confirm=True
+                    )
+
+    def test_market_order_funds_formatted(self):
+        client = FakeOrderClient()
+        place_market_order(client, "BTC-USDT", "buy", funds=0.00001, confirm=True)
+        self.assertEqual(client.orders[0]["funds"], "0.00001")
+
+
+class OpenOrdersPaginationTests(unittest.TestCase):
+    class PagedClient:
+        """Serves a paginated /api/v1/orders envelope, 50 items per page."""
+
+        def __init__(self, total):
+            self.total = total
+            self.requested_pages = []
+
+        def list_orders(self, status="active", symbol=None, current_page=None, page_size=None):
+            self.requested_pages.append(current_page)
+            size = 50  # server caps below the requested page_size
+            start = (current_page - 1) * size
+            items = [{"id": f"o{i}"} for i in range(start, min(start + size, self.total))]
+            return {
+                "currentPage": current_page,
+                "pageSize": size,
+                "totalNum": self.total,
+                "totalPage": -(-self.total // size),
+                "items": items,
+            }
+
+    def test_all_pages_are_followed(self):
+        client = self.PagedClient(total=137)
+        orders = open_orders(client)
+        self.assertEqual(len(orders), 137)
+        self.assertEqual(client.requested_pages, [1, 2, 3])
+        self.assertEqual(orders[-1]["id"], "o136")
+
+    def test_single_page_makes_one_request(self):
+        client = self.PagedClient(total=3)
+        self.assertEqual(len(open_orders(client)), 3)
+        self.assertEqual(client.requested_pages, [1])
+
+    def test_no_open_orders(self):
+        client = self.PagedClient(total=0)
+        self.assertEqual(open_orders(client), [])
+
+    def test_stops_when_server_overstates_total_pages(self):
+        class LyingClient:
+            def __init__(self):
+                self.calls = 0
+
+            def list_orders(self, status="active", symbol=None, current_page=None, page_size=None):
+                self.calls += 1
+                return {"totalPage": 99, "items": [] if current_page > 1 else [{"id": "o0"}]}
+
+        client = LyingClient()
+        self.assertEqual(len(open_orders(client)), 1)
+        self.assertEqual(client.calls, 2)
+
+    def test_bare_list_response_is_tolerated(self):
+        class ListClient:
+            def list_orders(self, status="active", symbol=None, current_page=None, page_size=None):
+                return [{"id": "o0"}]
+
+        self.assertEqual(open_orders(ListClient()), [{"id": "o0"}])
+
+
 class CandleParsingTests(unittest.TestCase):
     def test_candles_parsed_and_sorted_oldest_first(self):
         class CandleClient:
@@ -209,6 +321,13 @@ class CandleParsingTests(unittest.TestCase):
         self.assertEqual([c["time"] for c in candles], [1700000000, 1700003600])
         self.assertEqual(candles[0]["open"], 99.0)
         self.assertEqual(candles[1]["close"], 102.0)
+
+    def test_null_data_returns_empty_list(self):
+        class EmptyRangeClient:
+            def candles(self, symbol, type="1hour", start_at=None, end_at=None):
+                return None  # KuCoin sends data: null for a range with no candles
+
+        self.assertEqual(recent_candles(EmptyRangeClient(), "BTC-USDT"), [])
 
 
 if __name__ == "__main__":
