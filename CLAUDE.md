@@ -367,6 +367,16 @@ connector, so Claude cannot clear them.
   a human running `examples/review_pending_orders.py` and typing YES per
   order. This was explicitly requested and explicitly declined during
   development — do not add one. See `service/SETUP_WINDOWS.md`.
+- **The scan loop is DISABLED by default (owner decision, 2026-08-07).**
+  `SCAN_ENABLED` gates the pipeline independently of `MODE` and is opt-IN:
+  unset, empty, or unrecognized all leave it off, so a typo fails safe.
+  With it off the supervisor still connects, reconnects and health-checks
+  but never calls `run_cycle` in either mode. Rationale: the gate and
+  pullback strategies both backtested to negative expectancy, and the
+  adopted strategy (QQQ buy-and-hold) is deliberately inert — a running
+  scanner would only generate alerts for setups already decided against.
+  Locked by `tests/test_service_config.py`. Turn it back on only for a
+  strategy re-validated through `net_of_commission.py`.
 
 ## Account facts (verified, stable)
 

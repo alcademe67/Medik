@@ -56,8 +56,16 @@ def main() -> None:
     logger = setup_logging(config.log_dir, name="service")
 
     logger.info("=" * 70)
-    logger.info(f"Medik trading service starting -- MODE={config.mode}")
-    if config.mode == "LIVE":
+    logger.info(f"Medik trading service starting -- MODE={config.mode} SCAN_ENABLED={config.scan_enabled}")
+    if not config.scan_enabled:
+        logger.info(
+            "Scan loop is DISABLED. The service will connect, reconnect and run health "
+            "checks, but will not scan, score, place or queue anything in any mode. "
+            "This is the default (see service/config.py): the gate and pullback "
+            "strategies backtested to negative expectancy, and the account's adopted "
+            "strategy is QQQ buy-and-hold, which is deliberately inert."
+        )
+    elif config.mode == "LIVE":
         logger.info(
             "LIVE mode: pipeline runs fully autonomously through scan -> score -> "
             "risk engine, then QUEUES qualifying setups for human review. "
@@ -115,7 +123,13 @@ def main() -> None:
                     paused = False
                     logger.info("health checks OK: " + "; ".join(f"{n}={m}" for n, (_, m) in checks))
 
-            if paused:
+            if not config.scan_enabled:
+                if cycle_count == 1:
+                    logger.info(
+                        "SCAN_ENABLED=false -- scan loop disabled; monitoring connection "
+                        "and health only. Set SCAN_ENABLED=true to re-enable."
+                    )
+            elif paused:
                 logger.warning("paused (last health check failed) -- skipping cycle")
             elif not market_is_open(config):
                 if cycle_count == 1:

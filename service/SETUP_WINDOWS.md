@@ -37,9 +37,23 @@ Copy `.env.example` to `.env` at the repo root if you haven't, and set:
 ```
 MODE=PAPER          # or LIVE -- see service/config.py docstring for exactly
                      # what each does. LIVE never submits orders automatically.
+SCAN_ENABLED=false   # master switch for the pipeline; OFF by default
 IBKR_PORT=7497       # 7497 for paper, 7496 for live TWS, 4001/4002 for Gateway
 POLL_INTERVAL_SECONDS=300
 ```
+
+**The scan loop ships disabled.** With `SCAN_ENABLED=false` (the default,
+including when the key is absent) the service connects, reconnects and runs
+health checks, but never scans, scores, queues or places anything in either
+mode. That is deliberate: the gate and pullback strategies both backtested
+to negative expectancy, and the account's adopted strategy is QQQ
+buy-and-hold, which is inert by design.
+
+So with the default settings this service does nothing useful — it is a
+connection babysitter. If you don't want a process running at all, simply
+don't create the Task Scheduler task in step 3; nothing else depends on it.
+Set `SCAN_ENABLED=true` only for a strategy that has been re-validated
+through `net_of_commission.py`.
 
 ## 3. Create the Windows Task Scheduler task
 

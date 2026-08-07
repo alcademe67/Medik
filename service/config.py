@@ -21,6 +21,18 @@ MODE has exactly two valid values:
 
 Defaults to PAPER if MODE is unset or unrecognized, since an unrecognized
 value should never silently fall through to live-anything.
+
+SCAN_ENABLED gates the pipeline independently of MODE, and **defaults to
+false** (owner decision, 2026-08-07). The gate and pullback strategies the
+pipeline runs were both backtested to negative expectancy, and the account's
+adopted strategy is QQQ buy-and-hold -- which is deliberately inert. Leaving
+the scan loop running would produce alerts for setups that have already been
+decided against, and the failure mode of buy-and-hold is intervening.
+
+With SCAN_ENABLED=false the supervisor still connects, reconnects, and runs
+health checks; it just never calls run_cycle. Set SCAN_ENABLED=true to turn
+scanning back on -- e.g. to run a newly validated strategy, which per
+CLAUDE.md must first be re-run through net_of_commission.py.
 """
 from __future__ import annotations
 
@@ -32,10 +44,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VALID_MODES = ("PAPER", "LIVE")
 
+_TRUTHY = ("1", "true", "yes", "on")
+
 
 @dataclass(frozen=True)
 class ServiceConfig:
     mode: str
+    scan_enabled: bool
     host: str
     port: int
     client_id: int
@@ -55,8 +70,14 @@ def load_config() -> ServiceConfig:
     default_port = 7497 if mode == "PAPER" else 7496
     port = int(os.environ.get("IBKR_PORT", default_port))
 
+    # Opt-IN, not opt-out: an unset or misspelled value leaves scanning off,
+    # which is the safe direction given the pipeline's strategies tested
+    # negative and the adopted strategy is buy-and-hold.
+    scan_enabled = os.environ.get("SCAN_ENABLED", "false").strip().lower() in _TRUTHY
+
     return ServiceConfig(
         mode=mode,
+        scan_enabled=scan_enabled,
         host=os.environ.get("IBKR_HOST", "127.0.0.1"),
         port=port,
         client_id=int(os.environ.get("IBKR_SERVICE_CLIENT_ID", 77)),
