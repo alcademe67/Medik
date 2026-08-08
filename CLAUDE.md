@@ -265,8 +265,16 @@ plainly that intervening is the failure mode of this strategy.
 - **`examples/place_core_holding.py`** (added 2026-08-07) sidesteps the GUI
   entirely: it reads live settled cash, sizes through `size_core_holding`,
   prices off the live ask, refuses to run outside the regular session, and
-  submits only on a typed YES. Its offline logic is tested; its live
-  connect/quote/submit path has NOT been exercised yet.
+  submits only on a typed YES. Its offline logic is tested; its final
+  `placeOrder` call has NOT been exercised yet.
+- **The local TWS socket path WORKS — verified 2026-08-07** by the owner
+  running `check_tws.bat` → `examples/tws_status.py` successfully. That
+  proves the whole prerequisite chain on their machine: API socket enabled,
+  127.0.0.1 trusted, port correct, venv has `ib_async`. So local scripts are
+  the reliable execution route, in contrast to `create_order_instruction`,
+  which has never filled. `tws_status.py` also uses `reqAllOpenOrders`, so
+  it sees hand-typed GUI tickets that `get_account_orders` misses — prefer
+  it over the connector when auditing working orders.
 
 ### Two things learned while placing the first core order (2026-08-05)
 
