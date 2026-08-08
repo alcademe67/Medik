@@ -92,15 +92,26 @@ def main() -> None:
             flag = "OK" if deployed <= cap else "OVER CAP"
             print(f"  deployed          {deployed:>10.1%}   (cap {cap:.0%} — {flag})")
 
+        # ib.portfolio() rather than ib.positions(): positions() carries only
+        # quantity and average cost, so the only "value" derivable from it is
+        # quantity x cost -- i.e. what you PAID, which is not what the holding
+        # is worth and disagrees with GrossPositionValue by the unrealized P&L.
+        # portfolio() carries live marketPrice/marketValue/unrealizedPNL.
         print("\nPositions:")
-        positions = [p for p in ib.positions() if p.position]
-        if not positions:
+        items = [p for p in ib.portfolio() if p.position]
+        if not items:
             print("  (none)")
-        for pos in positions:
-            sym = pos.contract.symbol
-            qty = pos.position
-            basis = pos.avgCost
-            print(f"  {sym:<6} {qty:>12,.4f} sh   avg cost ${basis:,.4f}   value ${qty * basis:>10,.2f}")
+        for item in items:
+            sym = item.contract.symbol
+            cost = item.position * item.averageCost
+            print(
+                f"  {sym:<6} {item.position:>12,.4f} sh @ ${item.marketPrice:,.2f}"
+                f"   value ${item.marketValue:>10,.2f}"
+                f"   cost ${cost:>10,.2f}"
+                f"   unreal. ${item.unrealizedPNL:>+8,.2f}"
+            )
+        if items:
+            print("  (avg cost includes commission, so a fresh position starts slightly red)")
 
         # Working orders: the whole reason this script exists. reqAllOpenOrders
         # asks TWS for orders placed by ANY client, not just this one, so
