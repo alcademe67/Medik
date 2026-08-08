@@ -1,0 +1,15 @@
+Invoice No.,Date,Client,Subtotal,GST,PST,Total,Status,Currency,Notes
+INV-1039,12/06/2026,Arbutus Home Reno,5000.00,250.00,350.00,5600.00,Paid,CAD,
+INV-1042,03/07/2026,Harbourview Renovations,4850.00,242.50,339.50,5432.00,Paid,CAD,Engineered oak - supply only
+INV-1043,11/07/2026,Delta Property Group,"12,400.00",620.00,868.00,"13,888.00",Paid,CAD,Vinyl plank bulk order
+INV-1044,19/07/2026,Nisga'a Valley Construction,8200.00,410.00,0.00,8610.00,Paid,CAD,Sale to First Nations purchaser delivered to reserve - certificate on file
+INV-1045,02/08/2026,Coastline Flooring Supply,6750.00,337.50,0.00,7087.50,Paid,CAD,Purchased for resale - PST-1234-5678
+INV-1046,08/08/2026,A. Whitfield,2300.00,115.00,0.00,2415.00,Paid,CAD,
+INV-1047,15/08/2026,Redmond Interiors,5600.00,280.00,280.00,6160.00,Paid,CAD,Laminate + underlay
+INV-1048,27/08/2026,Seymour Heights Development,"19,800.00",990.00,"1,386.00","22,176.00",Unpaid,CAD,Net 60 terms
+INV-1049,04/09/2026,Bellamy Custom Homes,7450.00,372.50,521.50,8344.00,Paid,CAD,Hardwood - supply only
+CN-0031,09/09/2026,Delta Property Group,(1200.00),(60.00),(84.00),(1344.00),Credit,CAD,Return of 3 damaged boxes
+INV-1050,16/09/2026,Pemberton Lodge Ltd,3100.00,155.00,217.00,3472.00,Void,CAD,Duplicate of INV-1049
+QTE-0088,18/09/2026,Marchetti Residence,9400.00,470.00,658.00,10528.00,Quote,CAD,Awaiting customer decision
+INV-1051,25/09/2026,Kestrel Ridge Builders,"15,250.00",762.50,"1,067.50","17,080.00",Paid,CAD,Tile and hardwood
+INV-1052,29/09/2026,Northline Contracting,2000.00,100.00,140.00,2240.00,Paid,USD,Cross-border order

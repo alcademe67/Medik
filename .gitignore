@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+
+# tool output
+pst.config.json
+*audit*.csv

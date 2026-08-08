@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Copy this file to pst.config.json to use it. Everything here is optional.",
+    "You only need it if the tool cannot work out your export's columns on its",
+    "own, which it will tell you if it happens. Run with --show-columns to see",
+    "what it matched."
+  ],
+
+  "_columns_comment": [
+    "Map a field the tool needs onto the exact heading in your CSV.",
+    "Left side: the tool's field name. Right side: your column heading.",
+    "Fields: number, date, customer, subtotal, total, pst, gst, tax_total,",
+    "status, currency, exempt_reason."
+  ],
+  "columns": {
+    "date": "Invoice Date",
+    "pst": "PST",
+    "gst": "GST",
+    "exempt_reason": "Notes"
+  },
+
+  "_date_order_comment": [
+    "Only needed if your dates are numeric like 03/07/2026 AND the tool cannot",
+    "tell which way round they are. 'dmy' = 3 July. 'mdy' = 7 March.",
+    "Leave this out and the tool will work it out from the whole column."
+  ],
+  "date_order": "dmy"
+}
