@@ -258,6 +258,10 @@ if ($Uninstall) {
     Write-Note "Removed '$Name' from $Scope config."
     Write-Note 'Any token stored with it is gone from the config, but is still valid'
     Write-Note 'at the issuer until you revoke it there.'
+    Write-Note ''
+    Write-Note 'Claude Code snapshots the config on every change, so a token installed'
+    Write-Note 'earlier can outlive this removal in a backup. Check for stray copies:'
+    Write-Note '  Select-String -Path ~/.claude/backups/* -Pattern ''<your token prefix>'''
     exit 0
 }
 

@@ -246,6 +246,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "Removed '$NAME' from $SCOPE config."
     note "Any token stored with it is gone from the config, but is still valid"
     note "at the issuer until you revoke it there."
+    note ""
+    note "Claude Code snapshots the config on every change, so a token installed"
+    note "earlier can outlive this removal in a backup. Check for stray copies:"
+    note "  grep -rl '<your token prefix>' ~/.claude/backups/"
     exit 0
 fi
 
