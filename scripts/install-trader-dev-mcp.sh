@@ -106,6 +106,36 @@ if [ "$DIAGNOSE" -eq 1 ]; then
         printf '%s %s' "$code" "$rc"
     }
 
+    # A CDN or WAF sitting in front of the origin blocks with the same status
+    # codes the origin would use, so the response headers are the only way to
+    # tell "the edge refused you" from "the MCP server refused you".
+    # $1 is the status observed. A CDN reporting 404 or 200 is just relaying the
+    # origin, so the interesting case is a block-shaped status: those the edge
+    # can generate entirely on its own, without the origin ever being consulted.
+    report_edge_marker() {
+        local observed="$1" hdrs srv ray
+        hdrs="$(curl -sS -o /dev/null -D - --max-time "$TIMEOUT" \
+                     -H 'Accept: application/json, text/event-stream' \
+                     "$URL" 2>/dev/null | tr -d '\r')" || return 0
+        srv="$(printf '%s\n' "$hdrs" | awk -F': ' 'tolower($1) == "server" { print $2; exit }')"
+        ray="$(printf '%s\n' "$hdrs" | awk -F': ' 'tolower($1) == "cf-ray" { print $2; exit }')"
+        [ -n "$srv$ray" ] || return 0
+        note ""
+        note "Served via an edge/CDN${srv:+ (server: $srv)}${ray:+, cf-ray: $ray}."
+        case "$observed" in
+            403|429|503)
+                note "A $observed is a status the edge itself can return, so this may be CDN"
+                note "bot protection refusing a non-browser client, with the MCP server"
+                note "behind it never seeing the request. Retrying with a browser User-Agent"
+                note "distinguishes the two: if it succeeds, the edge was the blocker."
+                ;;
+            *)
+                note "A $observed is normally relayed from the origin rather than produced by"
+                note "the edge, so the CDN is probably not the cause here."
+                ;;
+        esac
+    }
+
     note "Probing $URL (timeout ${TIMEOUT}s)"
     for proxy_var in HTTPS_PROXY https_proxy ALL_PROXY all_proxy; do
         if [ -n "${!proxy_var:-}" ]; then
@@ -179,6 +209,7 @@ if [ "$DIAGNOSE" -eq 1 ]; then
         note "The rejection is therefore NOT about your token - the request is"
         note "refused either way. Suspect a proxy or VPN in the path, an IP-level"
         note "block, or simply the wrong URL."
+        report_edge_marker "$auth_code"
         exit 1
     elif is2xx "$bare_code"; then
         note "VERDICT: works WITHOUT the header ($bare_code), fails WITH it ($auth_code)."
