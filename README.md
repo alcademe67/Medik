@@ -52,7 +52,9 @@ accident. See `examples/place_order_example.py`.
 
 This is a **live trading account** — orders placed this way use real money.
 Prefer limit orders over market orders, and double check symbol/side/quantity/
-price before setting `confirm=True`.## Installing the trader-dev MCP server
+price before setting `confirm=True`.
+
+## Installing the trader-dev MCP server
 
 `scripts/Install-TraderDevMcp.ps1` registers the `trader-dev` SSE server with
 Claude Code at **user scope**, which makes it available in all of your
