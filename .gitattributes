@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings. Git for Windows defaults to
+# core.autocrlf=true, which rewrites them to CRLF on checkout, and bash then
+# fails on the first line with: $'\r': command not found
+*.sh text eol=lf
