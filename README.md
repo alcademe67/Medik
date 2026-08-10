@@ -1,28 +1,58 @@
 # Medik
 
-This repository no longer contains the KuCoin spot-trading toolkit. The
-`kucoin/` package, its examples, its tests and the CI workflow that ran
-them were removed.
+## Interactive Brokers TWS connection
 
-Nothing is lost - the code is still in this repository's history. Commit
-`95b04f3` is the last one that contained it:
+Python connects to a locally running TWS (Trader Workstation) instance over its
+socket API, using the [`ib_async`](https://github.com/ib-api-reloaded/ib_async)
+library.
+
+### 1. Configure TWS
+
+In TWS, go to **File > Global Configuration > API > Settings** and set:
+
+- **Enable ActiveX and Socket Clients** — checked
+- **Socket port** — `7496` (TWS Live Trading; `7497` is Paper Trading)
+- **Trusted IPs** — add `127.0.0.1`
+- **Read-Only API** — unchecked, if you want to place orders from Python; checked
+  if you only want read access
+
+Leave TWS open and logged into the account you want to connect to — the API
+only works while TWS itself is running.
+
+### 2. Install dependencies
 
 ```bash
-# browse the code as it was
-git checkout 95b04f3
-
-# or restore it onto a branch
-git checkout -b restore-kucoin 95b04f3
+pip install -r requirements.txt
 ```
 
-No API credentials were ever committed here: `.env` was gitignored from
-the first commit, and `.env.example` only ever held empty placeholders.
-Removing the code therefore has no bearing on the safety of any KuCoin
-key. If a key was used on a machine you have doubts about, rotate it at
-<https://www.kucoin.com/account/api> - deleting source code does not
-revoke a key that has already been issued.
+### 3. Configure connection settings
 
-## Installing the trader-dev MCP server
+```bash
+cp .env.example .env
+```
+
+Defaults are `127.0.0.1:7496` (TWS Live). Edit `.env` if your Global
+Configuration uses a different port or you're running multiple TWS/Gateway
+instances (each needs a distinct `IBKR_CLIENT_ID`).
+
+### 4. Test the connection
+
+```bash
+python examples/connect_test.py
+```
+
+This prints account summary and current positions — read-only, no orders.
+
+### 5. Placing orders
+
+`ibkr/orders.py` has `place_limit_order` / `place_market_order` helpers. Both
+require an explicit `confirm=True` — without it they raise `OrderRejected`
+instead of submitting anything, so a script can't send a live order by
+accident. See `examples/place_order_example.py`.
+
+This is a **live trading account** — orders placed this way use real money.
+Prefer limit orders over market orders, and double check symbol/side/quantity/
+price before setting `confirm=True`.## Installing the trader-dev MCP server
 
 `scripts/Install-TraderDevMcp.ps1` registers the `trader-dev` SSE server with
 Claude Code at **user scope**, which makes it available in all of your
