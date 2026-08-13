@@ -20,7 +20,9 @@ import paths
 def test_defaults_are_inside_the_repo(monkeypatch):
     monkeypatch.delenv(paths.DATA_DIR_ENV, raising=False)
     monkeypatch.delenv(paths.REPORTS_DIR_ENV, raising=False)
+    monkeypatch.delenv(paths.LOGS_DIR_ENV, raising=False)
     assert paths.data_dir() == paths.REPO_ROOT / "data"
+    assert paths.logs_dir() == paths.REPO_ROOT / "logs"
     assert paths.notebooks_dir() == paths.REPO_ROOT / "notebooks"
 
 
@@ -55,6 +57,39 @@ def test_blank_env_falls_back_to_default(monkeypatch):
 def test_notebooks_dir_is_not_overridable(tmp_path, monkeypatch):
     monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path))
     assert paths.notebooks_dir() == paths.REPO_ROOT / "notebooks"
+
+
+# --- logs -----------------------------------------------------------------
+
+def test_logs_dir_uses_the_services_existing_env_var():
+    """Not MEDIK_LOGS_DIR. The service has read SERVICE_LOG_DIR since it was
+    written and it is documented in .env.example -- two variables naming one
+    directory means whichever you didn't set is the one that wins."""
+    assert paths.LOGS_DIR_ENV == "SERVICE_LOG_DIR"
+
+
+def test_logs_dir_honours_the_override(tmp_path, monkeypatch):
+    monkeypatch.setenv(paths.LOGS_DIR_ENV, str(tmp_path / "l"))
+    assert paths.logs_dir() == tmp_path / "l"
+
+
+def test_logs_dir_does_not_create_by_default(tmp_path, monkeypatch):
+    target = tmp_path / "logs"
+    monkeypatch.setenv(paths.LOGS_DIR_ENV, str(target))
+    assert not paths.logs_dir().exists()
+    assert paths.logs_dir(create=True).is_dir()
+
+
+def test_service_config_agrees_with_paths(tmp_path, monkeypatch):
+    """service/config.py resolves log_dir through paths.logs_dir(); readers of
+    the logs must land where the service writes them."""
+    from service.config import load_config
+
+    monkeypatch.delenv(paths.LOGS_DIR_ENV, raising=False)
+    assert load_config().log_dir == paths.REPO_ROOT / "logs"
+
+    monkeypatch.setenv(paths.LOGS_DIR_ENV, str(tmp_path / "elsewhere"))
+    assert load_config().log_dir == paths.logs_dir() == tmp_path / "elsewhere"
 
 
 # --- bar caches -----------------------------------------------------------

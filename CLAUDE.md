@@ -493,8 +493,10 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
   `pipeline.py` (shared scan-score-risk-act cycle, mode-aware),
   `config.py`, `health.py`, `alerts.py`, `market_hours.py`,
   `logging_setup.py`, `run_supervisor.bat`
-- `paths.py` — repo-root module resolving `data/`, `reports/`, `notebooks/`
-  (env overrides `MEDIK_DATA_DIR` / `MEDIK_REPORTS_DIR`)
+- `paths.py` — repo-root module resolving `data/`, `reports/`, `logs/`,
+  `notebooks/` (env overrides `MEDIK_DATA_DIR` / `MEDIK_REPORTS_DIR` /
+  `SERVICE_LOG_DIR` — the last is the service's existing variable, reused
+  rather than duplicated, and `service/config.py` now delegates to it)
 - `docs/` — operating docs: `RESTART_PROMPT.md` (session handoff),
   `SETUP_WINDOWS.md` (service install), `core-holding-runbook.md`,
   `backtest-verdict.md` (what was tested + how to reproduce it),
@@ -502,4 +504,8 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
 - `data/` — cached daily bars, **gitignored** (README tracked)
 - `reports/` — generated report output, **gitignored** (README tracked);
   contains live balances, which is why it stays out of git
+- `logs/` — service logs (`service.log`, rotating 5MB×5) and `alerts.log`
+  (append-only, never rotated), **gitignored** (README tracked). A quiet
+  log is expected while `SCAN_ENABLED` is off — that is the configuration,
+  not a fault
 - `notebooks/` — research notebooks, tracked; commit with output cleared

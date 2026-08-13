@@ -17,10 +17,12 @@ else assumes.
 | [`docs/`](docs/) | Operating docs: session handoff, service setup, core-holding runbook, backtest verdict, MCP servers |
 | [`data/`](data/) | Cached daily bars. **Gitignored**; fill with `examples/fetch_bar_cache.py` |
 | [`reports/`](reports/) | Generated report output. **Gitignored** — contains live balances |
+| [`logs/`](logs/) | Service logs and `alerts.log`. **Gitignored** |
 | [`notebooks/`](notebooks/) | Research notebooks (Jupyter deps are separate from `requirements.txt`) |
 
-`paths.py` resolves the last three; `MEDIK_DATA_DIR` and `MEDIK_REPORTS_DIR`
-move them off the repo drive.
+`paths.py` resolves the last four. `MEDIK_DATA_DIR`, `MEDIK_REPORTS_DIR` and
+`SERVICE_LOG_DIR` move them off the repo drive; `notebooks/` is tracked in
+git, so it stays put.
 
 ## Interactive Brokers TWS connection
 

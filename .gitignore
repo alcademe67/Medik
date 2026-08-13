@@ -4,4 +4,7 @@ __pycache__/
 .venv/
 venv/
 journal.sqlite
-logs/
+
+# data/, reports/ and logs/ are NOT listed here: each carries its own
+# .gitignore that ignores its contents while tracking its README, so the
+# directories exist in a fresh clone and explain themselves.

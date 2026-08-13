@@ -24,6 +24,7 @@ Operating documentation. Two files stay at the repo root on purpose:
 |---|---|---|
 | `data/` | README only | Cached daily bars from IBKR. Regenerable via `examples/fetch_bar_cache.py`. |
 | `reports/` | README only | Timestamped script output. Contains live balances, so it stays out of git. |
+| `logs/` | README only | Rotating service logs plus `alerts.log`, the durable record of critical failures. |
 | `notebooks/` | yes | Research notebooks. Commit them with output cleared. |
 
 Each has its own README with the details.

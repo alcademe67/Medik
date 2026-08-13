@@ -15,6 +15,7 @@ the owner's Windows machine if the repo lives on a small drive:
 
     MEDIK_DATA_DIR=D:\\medik-data
     MEDIK_REPORTS_DIR=D:\\medik-reports
+    SERVICE_LOG_DIR=D:\\medik-logs
 """
 from __future__ import annotations
 
@@ -26,6 +27,11 @@ REPO_ROOT = Path(__file__).resolve().parent
 
 DATA_DIR_ENV = "MEDIK_DATA_DIR"
 REPORTS_DIR_ENV = "MEDIK_REPORTS_DIR"
+# Deliberately NOT "MEDIK_LOGS_DIR": the service has read SERVICE_LOG_DIR
+# since it was written, it is documented in .env.example, and it may already
+# be set on the owner's machine. Two environment variables naming the same
+# directory is a trap -- whichever one you didn't set is the one that wins.
+LOGS_DIR_ENV = "SERVICE_LOG_DIR"
 
 
 def _resolve(env_var: str, default_name: str, create: bool) -> Path:
@@ -52,6 +58,17 @@ def reports_dir(create: bool = True) -> Path:
     Defaults to create=True — the caller is about to write into it.
     """
     return _resolve(REPORTS_DIR_ENV, "reports", create)
+
+
+def logs_dir(create: bool = False) -> Path:
+    """`logs/`, or $SERVICE_LOG_DIR — rotating service logs and alerts.log.
+
+    Defaults to create=False: the two writers (service.logging_setup and
+    service.alerts) each mkdir before opening a handle, and a *reader*
+    looking for logs that don't exist should see that, not an empty
+    directory this call conjured.
+    """
+    return _resolve(LOGS_DIR_ENV, "logs", create)
 
 
 def notebooks_dir() -> Path:
