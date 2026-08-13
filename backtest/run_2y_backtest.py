@@ -1,40 +1,35 @@
 """Backtest over the 2-year cache.
 
-Usage: run_pullback_bt.py <capital> <gate|pullback|both>
+Usage: run_2y_backtest.py <capital> <gate|pullback|both>
 Long-only (matches the owner's TFSA), fractional sizing, full risk engine.
+
+Reads data/data2y (override with $MEDIK_BAR_CACHE). Fill it first with
+`python examples/fetch_bar_cache.py data2y --universe`.
+
+NOTE: this reports GROSS results. Both strategies are net-negative once this
+account's real commissions are applied -- run backtest/net_of_commission.py
+before drawing any conclusion from the numbers below.
 """
-import json, os, sys
-sys.path.insert(0, "/home/user/Medik")
-import pandas as pd
+import os, sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from backtest.engine import run_backtest
+from ibkr.cache import require_cache
+from paths import bar_cache_dir
 from strategy.config import DEFAULT_CONFIG
 from strategy.data_quality import drop_incomplete_trailing_bar
 
-DATA_DIR = "/tmp/claude-0/-home-user-Medik/6e4758d5-550e-5d2f-aa54-83a8153cb3f0/scratchpad/data2y"
+DATA_DIR = bar_cache_dir(os.environ.get("MEDIK_BAR_CACHE", "data2y"))
 CAPITAL = float(sys.argv[1]) if len(sys.argv) > 1 else 300.43
 SOURCE = sys.argv[2] if len(sys.argv) > 2 else "pullback"
 
-cols = ("open", "high", "low", "close", "volume")
-price_data, skipped = {}, []
-for fn in sorted(os.listdir(DATA_DIR)):
-    if not fn.endswith(".json"):
-        continue
-    sym = fn[:-5]
-    try:
-        raw = json.load(open(os.path.join(DATA_DIR, fn)))
-        lens = {k: len(raw[k]) for k in cols + ("time",)}
-        if len(set(lens.values())) != 1:
-            skipped.append((sym, "ragged"))
-            continue
-        idx = pd.to_datetime(raw["time"], utc=True).tz_localize(None)
-        df = pd.DataFrame({k: raw[k] for k in cols}, index=idx).sort_index()
-        df, _ = drop_incomplete_trailing_bar(df)
-        if len(df) <= DEFAULT_CONFIG.warmup_bars:
-            skipped.append((sym, "short %d" % len(df)))
-            continue
-        price_data[sym] = df
-    except Exception as e:
-        skipped.append((sym, str(e)[:40]))
+price_data, skipped = require_cache(
+    DATA_DIR,
+    min_bars=DEFAULT_CONFIG.warmup_bars + 1,
+    transform=lambda df: drop_incomplete_trailing_bar(df)[0],
+)
 
 span = None
 if price_data:

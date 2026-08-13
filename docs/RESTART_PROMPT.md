@@ -33,12 +33,12 @@ sleep hangs, IBKR rate limits). Then resume operations:
   universe, and a Windows background service under `service/`.
 - **Open item — the important one:** the trend-pullback strategy is
   **UNVALIDATED**. A 2-year dataset (~193 of 204 names) is cached at
-  `<scratchpad>/data2y/*.json` specifically to backtest it. Run that before
+  `data/data2y/*.json` specifically to backtest it. Run that before
   trusting pullback signals. See rule 8 in `CLAUDE.md`, including the
   provenance caveat about where those rules actually came from.
 - **Open item:** deploying `service/` on my Windows machine never got past
   step one — I still need to run `python examples\connect_test.py` there and
-  send you the output. See `service/SETUP_WINDOWS.md`.
+  send you the output. See `docs/SETUP_WINDOWS.md`.
 - **Open item:** my second IBKR username (`alcademe6767`) is still pending
   identity verification, so TWS and my phone app keep kicking each other off.
 

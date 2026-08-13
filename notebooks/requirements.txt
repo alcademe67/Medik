@@ -1,0 +1,7 @@
+# Notebook-only dependencies. Deliberately separate from the repo's
+# requirements.txt so the trading code and the Windows service install
+# without a notebook stack.
+#
+#   pip install -r notebooks/requirements.txt
+jupyterlab>=4.0
+matplotlib>=3.7

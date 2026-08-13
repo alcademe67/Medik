@@ -9,15 +9,24 @@ MARA 16sh/$197.84 -> $1.0000, S 12sh/$232.67 -> $1.0000.
 
 At this account's position sizes (~$30-60) the 1% cap always binds, so
 every round trip costs ~2% of position value.
+
+This is the gate every strategy change must pass before anyone calls it
+working (CLAUDE.md). Reads data/data2y -- override with $MEDIK_BAR_CACHE.
+
+    python backtest/net_of_commission.py <capital> <gate|pullback|both>
 """
-import json, os, sys
-sys.path.insert(0, "/home/user/Medik")
-import pandas as pd
+import os, sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from backtest.engine import run_backtest
+from ibkr.cache import require_cache
+from paths import bar_cache_dir
 from strategy.config import DEFAULT_CONFIG
 from strategy.data_quality import drop_incomplete_trailing_bar
 
-DATA_DIR = "/tmp/claude-0/-home-user-Medik/6e4758d5-550e-5d2f-aa54-83a8153cb3f0/scratchpad/data2y"
+DATA_DIR = bar_cache_dir(os.environ.get("MEDIK_BAR_CACHE", "data2y"))
 CAPITAL = float(sys.argv[1]) if len(sys.argv) > 1 else 300.43
 SOURCE = sys.argv[2] if len(sys.argv) > 2 else "pullback"
 
@@ -31,25 +40,11 @@ def commission(shares: float, value: float) -> float:
     return min(raw, MAX_PCT * value)
 
 
-cols = ("open", "high", "low", "close", "volume")
-price_data = {}
-for fn in sorted(os.listdir(DATA_DIR)):
-    if not fn.endswith(".json"):
-        continue
-    sym = fn[:-5]
-    try:
-        raw = json.load(open(os.path.join(DATA_DIR, fn)))
-        lens = {k: len(raw[k]) for k in cols + ("time",)}
-        if len(set(lens.values())) != 1:
-            continue
-        idx = pd.to_datetime(raw["time"], utc=True).tz_localize(None)
-        df = pd.DataFrame({k: raw[k] for k in cols}, index=idx).sort_index()
-        df, _ = drop_incomplete_trailing_bar(df)
-        if len(df) <= DEFAULT_CONFIG.warmup_bars:
-            continue
-        price_data[sym] = df
-    except Exception:
-        pass
+price_data, skipped = require_cache(
+    DATA_DIR,
+    min_bars=DEFAULT_CONFIG.warmup_bars + 1,
+    transform=lambda df: drop_incomplete_trailing_bar(df)[0],
+)
 
 res = run_backtest(
     price_data, starting_capital=CAPITAL, config=DEFAULT_CONFIG,

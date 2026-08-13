@@ -1,5 +1,27 @@
 # Medik
 
+IBKR trading automation. **Read [`CLAUDE.md`](CLAUDE.md) first** — it holds the
+standing risk rules, the execution policy, and the account facts everything
+else assumes.
+
+## Repository layout
+
+| directory | what's in it |
+|---|---|
+| `ibkr/` | TWS connection, orders, historical data, scanner, bar cache |
+| `strategy/` | Indicators, signal gate, pullback strategy, scoring, risk, journal |
+| `backtest/` | No-lookahead backtester, the commission gate, low-frequency comparison |
+| `examples/` | Runnable entry points |
+| `service/` | Windows background service |
+| `tests/` | pytest suite — `python -m pytest tests/ -q` |
+| [`docs/`](docs/) | Operating docs: session handoff, service setup, core-holding runbook, backtest verdict, MCP servers |
+| [`data/`](data/) | Cached daily bars. **Gitignored**; fill with `examples/fetch_bar_cache.py` |
+| [`reports/`](reports/) | Generated report output. **Gitignored** — contains live balances |
+| [`notebooks/`](notebooks/) | Research notebooks (Jupyter deps are separate from `requirements.txt`) |
+
+`paths.py` resolves the last three; `MEDIK_DATA_DIR` and `MEDIK_REPORTS_DIR`
+move them off the repo drive.
+
 ## Interactive Brokers TWS connection
 
 Python connects to a locally running TWS (Trader Workstation) instance over its

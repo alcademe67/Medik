@@ -1,0 +1,5 @@
+# Cached price data is large, regenerable, and account-specific — never commit it.
+# Only this file and the README are tracked.
+*
+!.gitignore
+!README.md

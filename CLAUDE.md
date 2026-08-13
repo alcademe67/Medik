@@ -78,7 +78,8 @@ this repo or via connected IBKR tools. They are enforced in code by
 
 Both strategies were backtested over **2 years of real IBKR daily bars,
 201 symbols**, long-only, with the full risk engine and fractional sizing
-active (`<scratchpad>/run_pullback_bt.py`, `net_of_commission.py`).
+active (now `backtest/run_2y_backtest.py`, `backtest/net_of_commission.py` —
+both read `data/data2y`; see `docs/backtest-verdict.md` to reproduce).
 
 | | gross P&L | commissions | **net** |
 |---|---|---|---|
@@ -374,7 +375,7 @@ connector, so Claude cannot clear them.
   there is no code path in this service that submits a live order without
   a human running `examples/review_pending_orders.py` and typing YES per
   order. This was explicitly requested and explicitly declined during
-  development — do not add one. See `service/SETUP_WINDOWS.md`.
+  development — do not add one. See `docs/SETUP_WINDOWS.md`.
 - **The scan loop is DISABLED by default (owner decision, 2026-08-07).**
   `SCAN_ENABLED` gates the pipeline independently of `MODE` and is opt-IN:
   unset, empty, or unrecognized all leave it off, so a typo fails safe.
@@ -430,20 +431,36 @@ connector, so Claude cannot clear them.
 - **Long fan-outs hit session token limits** (resets are several hours
   apart). Check coverage and gap-fill rather than restarting a whole batch.
 
-## Data caches (scratchpad, not in git)
+## Data caches (`data/`, gitignored — moved out of the scratchpad 2026-08-13)
 
-- `<scratchpad>/data/*.json` — ~1-year daily bars, ~88 names.
-- `<scratchpad>/data2y/*.json` — ~2-year daily bars, **~193 of 204** names,
-  fetched 2026-08-05 for the pending pullback backtest. Known bad/missing:
-  LUNR, REGN, TMO (ragged arrays — refetch before use); CFLT, BITF (no
-  resolvable US listing); ALB, AAL, DAL, UAL, CCL, NCLH (not fetched).
-  SNDK and WOLF have <2y of genuine history (spinoff/reorg) — not corrupt.
+Caches live in the working tree at `data/<span>/SYMBOL.json`, resolved by
+`paths.data_dir()` (override with `$MEDIK_DATA_DIR`). They used to live in a
+session scratchpad, and the three backtest runners hardcoded an absolute path
+to one; scratchpads are deleted with the container, so **the backtests behind
+the adopted strategy were unrunnable** until this moved. Don't reintroduce a
+scratchpad path in committed code.
+
+- `data/data2y/` — ~2-year daily bars, ~200 names, for the gate/pullback
+  backtests. Known bad in the original fetch: LUNR, REGN, TMO (ragged arrays
+  — refetch); CFLT, BITF (no resolvable US listing); ALB, AAL, DAL, UAL, CCL,
+  NCLH (not fetched). SNDK and WOLF have <2y of genuine history
+  (spinoff/reorg) — not corrupt.
+- `data/data5y/` — ~5-year ETF bars for `backtest/lowfreq.py`.
+- Fill either with `python examples/fetch_bar_cache.py <cache> [--universe|--etfs]`
+  (needs TWS open; resumable, so rerun to fill gaps).
+- Read them with `ibkr.cache.load_cache` — **not** a hand-rolled loader. It
+  centralizes the validation below, and returns a `skipped` list so a run
+  can't quietly cover a smaller universe than it claims.
 - `<scratchpad>/eval_both.py` — evaluates one symbol against BOTH strategies
-  and enforces all sizing/R:R rules; used by the morning-scan cron.
+  and enforces all sizing/R:R rules; used by the morning-scan cron. Still
+  scratchpad-only, so it dies with the session.
 - **Always validate a cache file before scoring**: all six OHLCV+time arrays
   must be equal length. A mid-session partial bar cached and reused after
   close silently produced a false gate failure on 2026-08-03 — that's why
-  `strategy/data_quality.py` exists.
+  `strategy/data_quality.py` exists. `ibkr.cache` enforces the length check
+  on load and writes via temp-file-and-rename so an interrupted write can't
+  produce a ragged file; completeness of the trailing bar is still the
+  caller's job, passed in as `transform=`.
 
 ## Alerts
 
@@ -466,11 +483,23 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
   (`universe.py`), config, and the SQLite decision journal (`journal.py`,
   → `journal.sqlite` at repo root, gitignored)
 - `backtest/` — no-lookahead multi-symbol backtester (signal on close,
-  fill at next open, stop-first when stop and target share a bar)
+  fill at next open, stop-first when stop and target share a bar), plus the
+  commission gate (`net_of_commission.py`) and the low-frequency comparison
+  (`lowfreq.py`, `run_lowfreq_comparison.py`)
 - `examples/` — runnable entry points (`connect_test.py`, `run_scan.py`,
   `run_backtest.py`, `manage_open_positions.py`, `check_risk_limits.py`,
-  `show_journal.py`, `review_pending_orders.py`)
+  `show_journal.py`, `review_pending_orders.py`, `fetch_bar_cache.py`)
 - `service/` — Windows background service: `supervisor.py` (main loop),
   `pipeline.py` (shared scan-score-risk-act cycle, mode-aware),
   `config.py`, `health.py`, `alerts.py`, `market_hours.py`,
-  `logging_setup.py`, `run_supervisor.bat`, `SETUP_WINDOWS.md`
+  `logging_setup.py`, `run_supervisor.bat`
+- `paths.py` — repo-root module resolving `data/`, `reports/`, `notebooks/`
+  (env overrides `MEDIK_DATA_DIR` / `MEDIK_REPORTS_DIR`)
+- `docs/` — operating docs: `RESTART_PROMPT.md` (session handoff),
+  `SETUP_WINDOWS.md` (service install), `core-holding-runbook.md`,
+  `backtest-verdict.md` (what was tested + how to reproduce it),
+  `mcp-servers.md`
+- `data/` — cached daily bars, **gitignored** (README tracked)
+- `reports/` — generated report output, **gitignored** (README tracked);
+  contains live balances, which is why it stays out of git
+- `notebooks/` — research notebooks, tracked; commit with output cleared

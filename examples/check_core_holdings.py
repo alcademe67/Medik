@@ -15,20 +15,28 @@ useful when adding to the position with new contributions.
 
 Run ON YOUR MACHINE while TWS is open and logged in:
 
-    python examples/check_core_holdings.py
+    python examples/check_core_holdings.py                 # QQQ, headroom in dollars
+    python examples/check_core_holdings.py QQQ 722.74      # ... and in shares
+    python examples/check_core_holdings.py --save          # also write to reports/
 """
 from __future__ import annotations
 
+import io
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ibkr.client import IBKRClient
+from paths import report_path
 from strategy.config import DEFAULT_CONFIG
 from strategy.core_holdings import is_core_etf
 from strategy.risk import RiskRejected, portfolio_headroom, size_core_holding
 from strategy.core_holdings import NotACoreETF
+
+_ARGS = [a for a in sys.argv[1:] if not a.startswith("-")]
+SAVE = "--save" in {a for a in sys.argv[1:] if a.startswith("-")}
 
 
 def main() -> None:
@@ -89,12 +97,12 @@ def main() -> None:
     headroom = portfolio_headroom(net_liq, gross_position_value, config)
     print(f"\nHeadroom under the {config.max_deployed_pct:.0%} deployed cap: ${headroom:,.2f}")
 
-    symbol = sys.argv[1].upper() if len(sys.argv) > 1 else "QQQ"
+    symbol = _ARGS[0].upper() if _ARGS else "QQQ"
     print(f"\nRoom to add to {symbol} under current rules:")
     try:
         # price is only needed to convert dollars->shares; ask the user to
         # supply it rather than pulling a quote, so this stays read-only.
-        price = float(sys.argv[2]) if len(sys.argv) > 2 else None
+        price = float(_ARGS[1]) if len(_ARGS) > 1 else None
         if price is None:
             allowed = min(available_funds * config.etf_max_position_pct, headroom)
             print(f"  ${allowed:,.2f}  (pass a price as arg 2 for a share count)")
@@ -112,5 +120,22 @@ def main() -> None:
           "recommends selling a core holding.\n")
 
 
+class _Tee(io.StringIO):
+    """Captures output for the report file while still printing it live."""
+
+    def write(self, s: str) -> int:
+        sys.__stdout__.write(s)
+        return super().write(s)
+
+
 if __name__ == "__main__":
-    main()
+    if SAVE:
+        buffer = _Tee()
+        with redirect_stdout(buffer):
+            main()
+        # reports/ is gitignored -- this output carries live balances and P&L.
+        destination = report_path("core-holdings", "txt")
+        destination.write_text(buffer.getvalue(), encoding="utf-8")
+        print(f"\nsaved -> {destination}")
+    else:
+        main()
