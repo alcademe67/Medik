@@ -509,3 +509,9 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
   log is expected while `SCAN_ENABLED` is off — that is the configuration,
   not a fault
 - `notebooks/` — research notebooks, tracked; commit with output cleared
+- `.github/workflows/tests.yml` — CI on every PR: pytest on Linux **and
+  Windows** (py3.11/3.12) plus a byte-compile pass over `examples/` and the
+  backtest runners, which no test imports. A second job installs pandas but
+  **not** `ib_async`, locking in the property that reading a bar cache never
+  drags in the broker library — don't "fix" that job by adding `ib_async`
+  to it; if it fails, an eager import crept back in
