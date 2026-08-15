@@ -1,14 +1,14 @@
-"""ALCA MTF LIVE — scan, evaluate, and place bracket orders through your own TWS.
+"""MEDIK MTF LIVE — scan, evaluate, and place bracket orders through your own TWS.
 
 Run this ON YOUR MACHINE with TWS open:
 
-    python examples/alca_mtf_live.py AAPL MSFT NVDA
-    python examples/alca_mtf_live.py --watchlist        # uses strategy.universe
-    python examples/alca_mtf_live.py AAPL --dry-run     # evaluate, place nothing
+    python examples/medik_mtf_live.py AAPL MSFT NVDA
+    python examples/medik_mtf_live.py --watchlist        # uses strategy.universe
+    python examples/medik_mtf_live.py AAPL --dry-run     # evaluate, place nothing
 
 WHAT IT DOES
     Weekly closed candle -> Daily closed candle -> 15-minute CLOSED candle
-    -> alca_mtf.generate_signal -> alca_live limits -> sized bracket order
+    -> medik_mtf.generate_signal -> medik_live limits -> sized bracket order
     (entry limit + stop-loss + take-profit) -> ONE TYPED CONFIRMATION -> TWS.
 
 WHAT IT WILL NOT DO
@@ -44,14 +44,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ib_async import Stock
 
 from ibkr.client import IBKRClient
-from strategy.alca_live import (
+from strategy.medik_live import (
     DEFAULT_LIMITS,
     SessionState,
     check_new_trade,
     register_fill,
     resolve_allow_short,
 )
-from strategy.alca_mtf import (
+from strategy.medik_mtf import (
     ATR_STOP_MULTIPLIER,
     RISK_REWARD,
     OHLCV,
@@ -144,7 +144,7 @@ def main() -> None:
         parser.error("give at least one symbol, or --watchlist")
 
     now = datetime.now(NY)
-    print(f"ALCA MTF LIVE — {now:%Y-%m-%d %H:%M} ET "
+    print(f"MEDIK MTF LIVE — {now:%Y-%m-%d %H:%M} ET "
           f"({'market OPEN' if _market_open(now) else 'market CLOSED'})")
     if not _market_open(now) and not args.dry_run:
         print("Market is closed. A DAY bracket placed now cannot work, and a limit")

@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from backtest.alca_mtf_bt import commission
-from strategy.alca_mtf import (
+from backtest.medik_mtf_bt import commission
+from strategy.medik_mtf import (
     MAX_DISTANCE_FROM_EMA,
     MIN_CONFIDENCE,
     OHLCV,

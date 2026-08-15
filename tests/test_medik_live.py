@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from strategy.alca_live import (
+from strategy.medik_live import (
     DEFAULT_LIMITS,
     LiveLimits,
     SessionState,
@@ -12,7 +12,7 @@ from strategy.alca_live import (
     register_fill,
     resolve_allow_short,
 )
-from strategy.alca_mtf import MIN_VOLUME_RATIO, OHLCV, volume_ratio_of
+from strategy.medik_mtf import MIN_VOLUME_RATIO, OHLCV, volume_ratio_of
 
 
 def _state(**kw) -> SessionState:
@@ -146,7 +146,7 @@ def test_volume_ratio_handles_a_zero_baseline():
 
 
 def test_min_volume_ratio_is_a_hard_gate():
-    from strategy.alca_mtf import generate_signal
+    from strategy.medik_mtf import generate_signal
 
     up = [OHLCV(c, c * 1.005, c * 0.995, c, 1_000_000)
           for c in [100 + i * 1.5 for i in range(80)]]

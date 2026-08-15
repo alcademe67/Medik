@@ -1,4 +1,4 @@
-"""Backtest the ALCA multi-timeframe structure across the cached universe.
+"""Backtest the Medik multi-timeframe structure across the cached universe.
 
 WHAT THIS RUNS, AND WHY IT IS AN UPPER BOUND
 --------------------------------------------
@@ -21,7 +21,7 @@ No-lookahead discipline:
   * when a bar's range spans both stop and target, the STOP fills first
 
 Usage:
-    python backtest/run_alca_mtf.py [equity] [max_symbols]
+    python backtest/run_medik_mtf.py [equity] [max_symbols]
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from strategy.alca_mtf import (
+from strategy.medik_mtf import (
     ATR_STOP_MULTIPLIER,
     RISK_REWARD,
     OHLCV,
@@ -187,7 +187,7 @@ def main() -> None:
         return g / l if l > 0 else float("inf")
 
     print("=" * 68)
-    print("ALCA MULTI-TIMEFRAME — DAILY-BAR UPPER BOUND, NET OF COMMISSIONS")
+    print("MEDIK MULTI-TIMEFRAME — DAILY-BAR UPPER BOUND, NET OF COMMISSIONS")
     print("=" * 68)
     print(f"symbols used        {used}   (skipped {len(skipped)}: {', '.join(skipped[:6])}"
           f"{'...' if len(skipped) > 6 else ''})")

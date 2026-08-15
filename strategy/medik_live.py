@@ -1,6 +1,6 @@
-"""Hard live-trading limits for the ALCA multi-timeframe strategy.
+"""Hard live-trading limits for the Medik multi-timeframe strategy.
 
-These sit BETWEEN a valid signal and an order. `strategy.alca_mtf` answers
+These sit BETWEEN a valid signal and an order. `strategy.medik_mtf` answers
 "is this a setup?"; this module answers "are we allowed to take it right
 now?" -- trade count, damage taken today and this week, and whether we
 already hold the symbol.

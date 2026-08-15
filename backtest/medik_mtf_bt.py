@@ -1,4 +1,4 @@
-"""Backtest the ALCA multi-timeframe strategy on real IBKR bars.
+"""Backtest the Medik multi-timeframe strategy on real IBKR bars.
 
 Timing discipline (the thing that makes a backtest worth believing):
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from strategy.alca_mtf import OHLCV, generate_signal
+from strategy.medik_mtf import OHLCV, generate_signal
 
 PER_SHARE = 0.005
 MIN_COMMISSION = 1.00

@@ -1,11 +1,11 @@
-"""ALCA multi-timeframe strategy — weekly regime, daily trend, 15m entry.
+"""Medik multi-timeframe strategy — weekly regime, daily trend, 15m entry.
 
 A pure-Python port of the pasted `strategy.py`, with the defects found in
 review fixed. No pandas: the rest of this repo is pure Python, pandas is not
 installed in every environment it runs in, and the list-based form is
 directly testable.
 
-FIXES APPLIED (each has a regression test in tests/test_alca_mtf.py)
+FIXES APPLIED (each has a regression test in tests/test_medik_mtf.py)
 --------------------------------------------------------------------
 1. **RSI no longer returns NaN in a clean uptrend.** The original computed
    ``rs = avg_gain / avg_loss.replace(0, nan)``. In a strictly rising series
