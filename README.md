@@ -1,5 +1,32 @@
 # Medik
 
+[![tests](https://github.com/alcademe67/Medik/actions/workflows/tests.yml/badge.svg)](https://github.com/alcademe67/Medik/actions/workflows/tests.yml)
+
+IBKR trading automation. **Read [`CLAUDE.md`](CLAUDE.md) first** — it holds the
+standing risk rules, the execution policy, and the account facts everything
+else assumes.
+
+## Repository layout
+
+| directory | what's in it |
+|---|---|
+| `ibkr/` | TWS connection, orders, historical data, scanner, bar cache |
+| `strategy/` | Indicators, signal gate, pullback strategy, scoring, risk, journal |
+| `backtest/` | No-lookahead backtester, the commission gate, low-frequency comparison |
+| `examples/` | Runnable entry points |
+| `service/` | Windows background service |
+| `tests/` | pytest suite — `python -m pytest tests/ -q` |
+| `.github/workflows/` | CI: pytest on Linux + Windows, py3.11/3.12, plus a byte-compile pass |
+| [`docs/`](docs/) | Operating docs: session handoff, service setup, core-holding runbook, backtest verdict, MCP servers |
+| [`data/`](data/) | Cached daily bars. **Gitignored**; fill with `examples/fetch_bar_cache.py` |
+| [`reports/`](reports/) | Generated report output. **Gitignored** — contains live balances |
+| [`logs/`](logs/) | Service logs and `alerts.log`. **Gitignored** |
+| [`notebooks/`](notebooks/) | Research notebooks (Jupyter deps are separate from `requirements.txt`) |
+
+`paths.py` resolves the last four. `MEDIK_DATA_DIR`, `MEDIK_REPORTS_DIR` and
+`SERVICE_LOG_DIR` move them off the repo drive; `notebooks/` is tracked in
+git, so it stays put.
+
 ## Interactive Brokers TWS connection
 
 Python connects to a locally running TWS (Trader Workstation) instance over its

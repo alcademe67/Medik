@@ -1,0 +1,5 @@
+# Service logs record account state, positions, and connection details.
+# Only this file and the README are tracked.
+*
+!.gitignore
+!README.md

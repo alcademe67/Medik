@@ -1,0 +1,5 @@
+# Generated reports contain live account balances and positions.
+# Nothing here is tracked except this file and the README.
+*
+!.gitignore
+!README.md

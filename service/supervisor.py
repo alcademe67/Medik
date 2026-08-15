@@ -3,7 +3,7 @@
     python service/supervisor.py
 
 Designed to be launched by Windows Task Scheduler at boot/logon (see
-service/SETUP_WINDOWS.md) via service/run_supervisor.bat. Runs until killed;
+docs/SETUP_WINDOWS.md) via service/run_supervisor.bat. Runs until killed;
 Task Scheduler's own "restart on failure" setting is the outermost safety
 net if this process itself dies unexpectedly (every code path below tries
 hard not to let that happen -- see the per-cycle and per-reconnect

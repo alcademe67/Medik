@@ -1,22 +1,25 @@
 """Compare low-frequency strategies against buy-and-hold, net of this
 account's real commissions.
 
-    python backtest/run_lowfreq_comparison.py [capital]
+    python backtest/run_lowfreq_comparison.py [capital] [--save]
 
-Reads the 5-year ETF cache written by the data-fetch agents. Every result
-below is AFTER commissions -- the whole point of this comparison is that
-gross numbers were never the problem.
+Reads the 5-year ETF cache from data/data5y and the 2-year stock cache from
+data/data2y (override with $MEDIK_ETF_CACHE / $MEDIK_BAR_CACHE). Fill them
+with `python examples/fetch_bar_cache.py`. --save also writes the output to
+reports/.
+
+Every result below is AFTER commissions -- the whole point of this comparison
+is that gross numbers were never the problem.
 """
 from __future__ import annotations
 
-import json
+import io
 import os
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import pandas as pd
 
 from backtest.lowfreq import run_lowfreq
 from backtest.strategies_lowfreq import (
@@ -25,31 +28,25 @@ from backtest.strategies_lowfreq import (
     dual_momentum,
     sma_timing,
 )
+from ibkr.cache import load_cache
+from paths import bar_cache_dir, report_path
 
-DATA5Y = "/tmp/claude-0/-home-user-Medik/6e4758d5-550e-5d2f-aa54-83a8153cb3f0/scratchpad/data5y"
-CAPITAL = float(sys.argv[1]) if len(sys.argv) > 1 else 300.43
-COLS = ("open", "high", "low", "close", "volume")
+_ARGS = [a for a in sys.argv[1:] if not a.startswith("-")]
+_FLAGS = {a for a in sys.argv[1:] if a.startswith("-")}
+CAPITAL = float(_ARGS[0]) if _ARGS else 300.43
+SAVE = "--save" in _FLAGS
+
+ETF_CACHE = os.environ.get("MEDIK_ETF_CACHE", "data5y")
+STOCK_CACHE = os.environ.get("MEDIK_BAR_CACHE", "data2y")
 
 
-def load(dirpath: str) -> dict:
-    out = {}
-    if not os.path.isdir(dirpath):
-        return out
-    for fn in sorted(os.listdir(dirpath)):
-        if not fn.endswith(".json"):
-            continue
-        sym = fn[:-5]
-        try:
-            raw = json.load(open(os.path.join(dirpath, fn)))
-            lens = {k: len(raw[k]) for k in COLS + ("time",)}
-            if len(set(lens.values())) != 1:
-                print(f"  (skipping {sym}: ragged arrays {lens})")
-                continue
-            idx = pd.to_datetime(raw["time"], utc=True).tz_localize(None)
-            out[sym] = pd.DataFrame({k: raw[k] for k in COLS}, index=idx).sort_index()
-        except Exception as exc:
-            print(f"  (skipping {sym}: {exc})")
-    return out
+def load(cache_name: str) -> dict:
+    """Load a named cache, reporting anything skipped rather than silently
+    comparing strategies over a smaller universe than intended."""
+    frames, skipped = load_cache(bar_cache_dir(cache_name))
+    for sym, why in skipped:
+        print(f"  (skipping {sym}: {why})")
+    return frames
 
 
 def show(rows: list) -> None:
@@ -63,9 +60,13 @@ def show(rows: list) -> None:
 
 
 def main() -> None:
-    etfs = load(DATA5Y)
+    etfs = load(ETF_CACHE)
     if not etfs:
-        raise SystemExit(f"no data in {DATA5Y}")
+        raise SystemExit(
+            f"no usable bars in {bar_cache_dir(ETF_CACHE)}\n"
+            f'  Populate it first:  python examples/fetch_bar_cache.py {ETF_CACHE} --etfs --duration "5 Y"\n'
+            f"  (needs TWS open and logged in)"
+        )
     span = next(iter(etfs.values()))
     print(f"Loaded {len(etfs)} ETFs: {sorted(etfs)}")
     print(f"Span: {span.index[0].date()} .. {span.index[-1].date()} ({len(span)} bars)")
@@ -106,8 +107,7 @@ def main() -> None:
     show(results)
 
     # Cross-sectional stock momentum, if the 2y stock cache is present.
-    data2y = DATA5Y.replace("data5y", "data2y")
-    stocks = load(data2y)
+    stocks = load(STOCK_CACHE)
     if len(stocks) > 20:
         print(f"\nLoaded {len(stocks)} stocks from the 2y cache for cross-sectional momentum.")
         if "SPY" in etfs:
@@ -131,5 +131,21 @@ def main() -> None:
         show(stock_rows)
 
 
+class _Tee(io.StringIO):
+    """Captures output for the report file while still printing it live."""
+
+    def write(self, s: str) -> int:
+        sys.__stdout__.write(s)
+        return super().write(s)
+
+
 if __name__ == "__main__":
-    main()
+    if SAVE:
+        buffer = _Tee()
+        with redirect_stdout(buffer):
+            main()
+        destination = report_path("lowfreq-comparison", "txt")
+        destination.write_text(buffer.getvalue(), encoding="utf-8")
+        print(f"\nsaved -> {destination}")
+    else:
+        main()

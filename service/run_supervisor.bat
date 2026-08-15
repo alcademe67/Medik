@@ -1,6 +1,6 @@
 @echo off
 REM Launches the background trading service. Meant to be run by Windows
-REM Task Scheduler (see SETUP_WINDOWS.md), but you can also double-click it
+REM Task Scheduler (see docs\SETUP_WINDOWS.md), but you can also double-click it
 REM to test.
 REM
 REM Assumes a venv at %REPO%\venv (adjust VENV_DIR if yours lives elsewhere)

@@ -37,10 +37,14 @@ CLAUDE.md must first be re-run through net_of_commission.py.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from paths import logs_dir  # noqa: E402 - needs REPO_ROOT on sys.path first
 
 VALID_MODES = ("PAPER", "LIVE")
 
@@ -82,7 +86,10 @@ def load_config() -> ServiceConfig:
         port=port,
         client_id=int(os.environ.get("IBKR_SERVICE_CLIENT_ID", 77)),
         poll_interval_seconds=int(os.environ.get("POLL_INTERVAL_SECONDS", 300)),
-        log_dir=Path(os.environ.get("SERVICE_LOG_DIR", REPO_ROOT / "logs")),
+        # paths.logs_dir reads the same SERVICE_LOG_DIR and defaults to the
+        # same <repo>/logs -- resolution moved there so readers of the logs
+        # agree with the service that writes them.
+        log_dir=logs_dir(),
         market_open_hour_et=9,
         market_open_minute_et=30,
         market_close_hour_et=16,
