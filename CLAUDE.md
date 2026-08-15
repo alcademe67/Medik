@@ -499,8 +499,8 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
   rather than duplicated, and `service/config.py` now delegates to it)
 - `docs/` — operating docs: `RESTART_PROMPT.md` (session handoff),
   `SETUP_WINDOWS.md` (service install), `core-holding-runbook.md`,
-  `backtest-verdict.md` (what was tested + how to reproduce it),
-  `mcp-servers.md`
+  `backtest-verdict.md` (what was tested + how to reproduce it).
+  MCP-server setup lives in `README.md`, not here
 - `data/` — cached daily bars, **gitignored** (README tracked)
 - `reports/` — generated report output, **gitignored** (README tracked);
   contains live balances, which is why it stays out of git
