@@ -16,7 +16,6 @@ Operating documentation. Two files stay at the repo root on purpose:
 | [`SETUP_WINDOWS.md`](SETUP_WINDOWS.md) | Installing `service/` as a Windows background service via Task Scheduler. |
 | [`core-holding-runbook.md`](core-holding-runbook.md) | The live QQQ position: how to check it, how to add to it, when to sell it, and the order-entry mistakes that have actually cost money here. |
 | [`backtest-verdict.md`](backtest-verdict.md) | What was tested, what the numbers were, what the caveats are, and how to reproduce it now that the data cache is in the tree. |
-| [`mcp-servers.md`](mcp-servers.md) | Registering additional MCP servers (Quiver Quantitative, trader-dev) with Claude Code. |
 
 ## Directories these docs refer to
 
