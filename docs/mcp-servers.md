@@ -27,14 +27,34 @@ changes.
 | Auth | `Authorization: Bearer <API key>` |
 | Key from | <https://www.quiverquant.com/> |
 | Cost | **paid — API access starts around $30/month** |
-| In the claude.ai connector directory? | **No.** Install it in Claude Code. |
+| In the claude.ai connector directory? | **No** — but it can still be added by hand, two ways (below). |
 
 > Verified by web search, not by reading the vendor docs directly:
 > `api.quiverquant.com` and `pulsemcp.com` are both blocked by this
 > environment's egress proxy. Treat the transport in particular as
 > unconfirmed — if `http` fails, retry with `sse`.
 
-### Install (PowerShell, on the Windows machine)
+### Option A — claude.ai custom connector (browser, no terminal)
+
+Usually the better choice: it persists across sessions and applies to the web
+app, the desktop app, and cloud Claude Code sessions, not just one machine.
+
+1. claude.ai → **Settings → Connectors → Add custom connector**
+2. URL: `https://mcp.quiverquant.com/`
+3. Under **Request headers**, add name `authorization`, value
+   `Bearer <your key>` — the word `Bearer`, a space, then the key.
+
+Claude stores the header value securely and does not display it again after
+saving.
+
+**Caveat:** request-header auth on custom connectors is in **beta and rolling
+out gradually**. If the Request headers section isn't in your dialog yet, the
+account doesn't have it — use Option B, which has no such dependency. Only a
+fixed set of header names is accepted (`authorization`, `x-api-key`,
+`x-auth-token`, and similar), which is fine here since Quiver wants
+`authorization`.
+
+### Option B — Claude Code (PowerShell, on the Windows machine)
 
 Store the key in a file rather than typing it into a command, so it does not
 land in PowerShell history:
