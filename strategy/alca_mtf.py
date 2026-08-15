@@ -64,6 +64,31 @@ MIN_CONFIDENCE = 0.75
 MIN_PRICE = 5.00
 MIN_AVG_DAILY_VOLUME = 100_000
 
+# Volume: the current entry bar against its own trailing average. This is a
+# HARD gate, not just a confidence input -- a breakout on below-average
+# volume is the classic false signal.
+VOLUME_LOOKBACK = 20
+MIN_VOLUME_RATIO = 1.0
+
+# Closed-candle discipline. See drop_forming_bar: an in-progress bar makes
+# signals appear and vanish as it ticks.
+USE_CLOSED_WEEKLY = True
+USE_CLOSED_DAILY = True
+USE_CLOSED_ENTRY = True
+
+
+def volume_ratio_of(bars: Sequence[OHLCV], lookback: int = VOLUME_LOOKBACK) -> float:
+    """Current bar's volume divided by the average of the `lookback` bars
+    BEFORE it. The current bar is excluded from its own average — including
+    it drags the baseline toward the value being tested."""
+    if len(bars) < lookback + 1:
+        return 1.0
+    window = bars[-(lookback + 1):-1]
+    avg = sum(b.volume for b in window) / len(window)
+    if avg <= 0:
+        return 1.0
+    return bars[-1].volume / avg
+
 
 @dataclass(frozen=True)
 class OHLCV:
@@ -269,6 +294,10 @@ def generate_signal(
                       weekly_trend=wk, daily_trend=dl)
     if a <= 0:
         return Signal("HOLD", symbol, price, reason="invalid ATR", weekly_trend=wk, daily_trend=dl)
+    if volume_ratio < MIN_VOLUME_RATIO:
+        return Signal("HOLD", symbol, price,
+                      reason=f"volume ratio {volume_ratio:.2f} below {MIN_VOLUME_RATIO:.2f}",
+                      weekly_trend=wk, daily_trend=dl)
 
     distance = abs(price - ef) / ef if ef else 1.0
 
