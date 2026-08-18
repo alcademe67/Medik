@@ -238,8 +238,26 @@ def main() -> None:
             bracket = ib.bracketOrder(sig.action, qty, limitPrice=round(entry_px, 2),
                                       takeProfitPrice=round(target, 2),
                                       stopLossPrice=round(stop, 2))
+            # TIF differs by leg, and the difference matters.
+            #
+            # The ENTRY is DAY: a limit priced off today's quote is wrong
+            # against tomorrow's open, so an unfilled entry must die at the
+            # close rather than linger.
+            #
+            # The STOP and TARGET are GTC, because this strategy is NOT a
+            # day trade. Measured over the backtest, 100% of trades were
+            # held longer than one session (median 7 days, max 46). DAY
+            # protective legs would expire at 16:00 ET and leave the
+            # position unprotected overnight for the rest of its life --
+            # and the tested result assumes the stop is live throughout.
+            #
+            # They are in an OCA group, so whichever fills cancels the other.
+            # GTC orders DO linger if the position is closed by other means:
+            # check the TWS Orders tab whenever you exit a position by hand.
+            bracket[0].tif = "DAY"
+            for order in bracket[1:]:
+                order.tif = "GTC"
             for order in bracket:
-                order.tif = "DAY"
                 ib.placeOrder(contract, order)
             ib.sleep(2)
             register_fill(state, symbol)
