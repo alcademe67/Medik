@@ -116,8 +116,22 @@ RISK_PCT_MAX = 1.0
 ATR_STOP_MULT = 1.5
 MIN_REWARD_RISK = 1.5
 
-MAX_NOTIONAL_PCT = 25.0        # of equity, before leverage scaling
+# Capital ALLOCATION ceiling -- how much capital may be committed to the
+# single best setup. This is NOT a loss limit. The risk ceiling below binds
+# independently and whichever is tighter wins, so raising this can never
+# increase the dollars at risk on a trade, only the notional deployed.
+MAX_CAPITAL_UTILIZATION = 0.90
+
 MAX_NDX_EXPOSURE_PCT = 90.0    # |net Nasdaq-beta-weighted exposure| cap
+
+# Continuous operation
+SCAN_INTERVAL_SEC = 300        # 5 minutes
+REENTRY_COOLDOWN_SEC = 900     # a symbol may not be re-entered for 15 minutes
+
+# Rotation: a challenger must beat the incumbent by this margin AND the
+# incumbent must have stopped qualifying. Stops churn on a marginally
+# better score.
+ROTATION_MIN_SCORE_MARGIN = 15.0
 
 MAX_ACTIVE_POSITIONS = 1
 MAX_TRADES_PER_SESSION = 3
@@ -451,8 +465,8 @@ def size_trade(
 
     Caps applied, tightest wins:
       * risk_pct of net liquidation, divided by the ATR stop distance
-      * MAX_NOTIONAL_PCT of equity, scaled DOWN by the fund's leverage so a
-        3x product never carries 3x the dollar exposure of a 1x one
+      * MAX_CAPITAL_UTILIZATION of equity, scaled DOWN by the fund's leverage
+        so a 3x product never carries 3x the dollar exposure of a 1x one
       * available cash
       * Nasdaq-beta headroom, which is what QQQ consumes
     """
@@ -476,9 +490,13 @@ def size_trade(
     qty_by_risk = risk_budget / stop_distance
 
     # leverage-scaled notional: a 3x fund gets a third of the notional room
-    notional_cap = state.net_liquidation * MAX_NOTIONAL_PCT / 100.0 / prof.leverage
+    # Capital allocation, scaled DOWN by leverage so a 3x fund never carries
+    # three times the dollar exposure of a 1x one. At 0.90 an unleveraged ETF
+    # may use 90% of equity; TQQQ gets 30%.
+    notional_cap = state.net_liquidation * MAX_CAPITAL_UTILIZATION / prof.leverage
     qty_by_notional = notional_cap / entry
-    qty_by_cash = state.available_cash / entry
+    # Never exceed buying power, and leave the same 10% unspent.
+    qty_by_cash = state.available_cash * MAX_CAPITAL_UTILIZATION / entry
     qty_by_ndx = ndx_headroom(state, candidate.symbol) / entry
 
     caps = {
@@ -577,3 +595,176 @@ def check_can_enter(
         return False, f"{state.open_order_count} open order(s) outstanding"
 
     return True, ""
+
+
+# ===========================================================================
+# AUTOMATED EXECUTION
+#
+# This strategy submits orders without per-order human confirmation once
+# MEDIK_ETF_LIVE=true. That is a deliberate, owner-authorised exception to
+# the repo's general "Claude drafts, the owner submits" policy, recorded in
+# CLAUDE.md. The confirmation is REPLACED by -- not merely dropped in favour
+# of -- the deterministic checklist in authorize_order(): every condition is
+# a pure function of account state and market data, so identical inputs
+# always produce an identical authorisation decision. No model output ever
+# authorises a trade; the code does.
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class AuthorizationResult:
+    authorized: bool
+    checks: dict                   # name -> bool
+    failures: tuple
+
+    def __bool__(self) -> bool:
+        return self.authorized
+
+
+def authorize_order(
+    *,
+    live_enabled: bool,
+    connected: bool,
+    state: PortfolioState,
+    controls: SessionControls,
+    candidate: CandidateScore,
+    sized: SizedTrade,
+    now_minutes: int,
+    ledger: "TradeLedger",
+    now_ts: float,
+) -> AuthorizationResult:
+    """Every gate between a ranked candidate and a live order.
+
+    Deterministic and side-effect free. Returns which checks passed so a
+    rejection can be logged precisely rather than as a bare "no trade".
+    """
+    checks: dict[str, bool] = {}
+
+    checks["live_mode_enabled"] = live_enabled
+    checks["ibkr_connected"] = connected
+    checks["account_data_valid"] = state.net_liquidation > 0
+    checks["buying_power_valid"] = state.available_cash > 0
+    checks["market_data_valid"] = candidate.price > 0 and candidate.atr > 0
+    checks["setup_valid"] = candidate.signal == "TRADE"
+    checks["position_size_valid"] = sized.quantity >= 1
+    checks["whole_share_quantity"] = float(sized.quantity).is_integer()
+    checks["stop_valid"] = 0 < sized.stop < sized.entry
+    checks["target_valid"] = sized.target > sized.entry
+    checks["reward_risk_ok"] = (
+        (sized.target - sized.entry) / (sized.entry - sized.stop) >= MIN_REWARD_RISK - 1e-9
+        if sized.entry > sized.stop else False
+    )
+
+    risk_ceiling = state.net_liquidation * RISK_PCT_MAX / 100.0
+    checks["risk_within_limit"] = sized.risk_dollars <= risk_ceiling + 1e-9
+
+    checks["capital_utilization_ok"] = (
+        sized.notional <= state.available_cash * MAX_CAPITAL_UTILIZATION + 1e-6
+    )
+    checks["affordable"] = sized.notional <= state.available_cash + 1e-9
+
+    checks["no_conflicting_position"] = state.active_position_count < MAX_ACTIVE_POSITIONS
+    checks["no_conflicting_open_order"] = state.open_order_count == 0
+    checks["not_duplicate"] = not ledger.is_blocked(sized.symbol, now_ts)
+
+    can_enter, _ = check_can_enter(state, controls, now_minutes)
+    checks["session_gates_ok"] = can_enter
+    checks["entries_enabled"] = not controls.entries_disabled
+
+    failures = tuple(name for name, ok in checks.items() if not ok)
+    return AuthorizationResult(not failures, checks, failures)
+
+
+# ------------------------------------------------------------- anti-repeat
+
+
+@dataclass
+class TradeLedger:
+    """Stops the scan loop re-submitting a setup it has already acted on.
+
+    A 5-minute loop keeps seeing the same qualifying chart for as long as it
+    qualifies. Without this, one setup becomes one order per scan.
+    """
+    last_entry_ts: dict = field(default_factory=dict)     # symbol -> timestamp
+    pending: set = field(default_factory=set)             # orders in flight
+    cooldown_sec: float = REENTRY_COOLDOWN_SEC
+
+    def is_blocked(self, symbol: str, now_ts: float) -> bool:
+        if symbol in self.pending:
+            return True
+        last = self.last_entry_ts.get(symbol)
+        return last is not None and (now_ts - last) < self.cooldown_sec
+
+    def mark_pending(self, symbol: str) -> None:
+        self.pending.add(symbol)
+
+    def mark_entered(self, symbol: str, now_ts: float) -> None:
+        self.pending.discard(symbol)
+        self.last_entry_ts[symbol] = now_ts
+
+    def mark_failed(self, symbol: str) -> None:
+        """An order that never became a position must not hold the slot."""
+        self.pending.discard(symbol)
+
+
+# -------------------------------------------------------- exits and rotation
+
+
+@dataclass(frozen=True)
+class OpenTrade:
+    symbol: str
+    quantity: int
+    entry: float
+    stop: float
+    target: float
+    entered_ts: float
+
+
+def should_exit(
+    trade: OpenTrade,
+    current: CandidateScore | None,
+    price: float,
+    now_minutes: int,
+    close_minutes: int = 16 * 60,
+) -> tuple[bool, str]:
+    """Deterministic exit rules, most urgent first.
+
+    The bracket enforces stop and target at the exchange; these are the
+    strategy-level exits a bracket cannot express.
+    """
+    if price <= trade.stop:
+        return True, f"stop hit: ${price:.2f} <= ${trade.stop:.2f}"
+    if price >= trade.target:
+        return True, f"target hit: ${price:.2f} >= ${trade.target:.2f}"
+    if now_minutes >= close_minutes - 5:
+        return True, "session ending"
+    if current is not None and current.trend_15m == "BEARISH":
+        return True, "15m regime turned bearish"
+    return False, ""
+
+
+def should_rotate(
+    trade: OpenTrade,
+    incumbent: CandidateScore | None,
+    challenger: CandidateScore,
+    price: float,
+) -> tuple[bool, str]:
+    """Rotate only when the held position has stopped qualifying AND the
+    challenger is substantially better.
+
+    Deliberately conservative. A profitable position that still qualifies is
+    never sold for a slightly higher score: each rotation costs a full round
+    trip in commission, which is the drag that sank every other strategy
+    tested in this repo.
+    """
+    if incumbent is not None and incumbent.signal == "TRADE":
+        return False, "incumbent still qualifies"
+    if price > trade.entry:
+        return False, "incumbent is profitable — not rotating out of a winner"
+    incumbent_score = incumbent.score if incumbent is not None else 0.0
+    margin = challenger.score - incumbent_score
+    if margin < ROTATION_MIN_SCORE_MARGIN:
+        return False, (f"challenger only +{margin:.0f} vs incumbent, "
+                       f"needs +{ROTATION_MIN_SCORE_MARGIN:.0f}")
+    return True, (f"incumbent no longer qualifies ({incumbent_score:.0f}); "
+                  f"{challenger.symbol} at {challenger.score:.0f} (+{margin:.0f})")

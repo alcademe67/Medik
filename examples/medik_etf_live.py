@@ -2,17 +2,28 @@
 
     MEDIK_ETF_LIVE=true python examples/medik_etf_live.py
 
-No symbols are required: the universe is fixed in strategy.medik_etf and the
-program ranks it, then trades AT MOST ONE candidate per invocation.
+No symbols are required: the universe is fixed in strategy.medik_etf. The
+process RUNS CONTINUOUSLY through the regular session, scanning every
+SCAN_INTERVAL_SEC, holding at most one position at a time.
 
-LIVE MODE IS EXPLICIT
+LIVE MODE IS EXPLICIT, AND AUTHORISES AUTOMATIC SUBMISSION
     Orders are sent only when MEDIK_ETF_LIVE is set to exactly "true". Any
     other value — including unset — prints LIVE ETF TRADING DISABLED and
     refuses to send. Live mode is never inferred from a missing variable.
 
-    The flag alone is not enough: every entry still requires the operator to
-    type the confirmation for that specific order. That is this repo's
-    execution policy (CLAUDE.md) and the confirm=True gate in ibkr/orders.py.
+    Once enabled, qualifying orders are submitted AUTOMATICALLY with no
+    per-order human approval. This is an owner-authorised exception to the
+    repo's general draft-and-approve policy, scoped to this strategy alone
+    and recorded in CLAUDE.md; every other order path still requires a human.
+
+    The approval step is REPLACED, not removed. strategy.medik_etf's
+    authorize_order() runs a deterministic checklist — live flag, connection,
+    account data, buying power, market data, setup validity, whole-share
+    size, stop, target, reward/risk, risk ceiling, capital utilisation,
+    conflicting position, conflicting order, duplicate suppression, session
+    gates — and an order is sent only when EVERY check passes. The function
+    is pure, so identical inputs always give an identical decision. No model
+    output authorises a trade.
 
 EVERY TRADE IS A BUY
     The account cannot short. Bearish views are expressed by buying the
@@ -30,6 +41,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -42,16 +54,23 @@ from ib_async import MarketOrder, Stock
 from ibkr.client import IBKRClient
 from strategy.medik_etf import (
     ETF_UNIVERSE,
+    MAX_CAPITAL_UTILIZATION,
+    SCAN_INTERVAL_SEC,
     ETFSnapshot,
+    OpenTrade,
     PortfolioState,
     Position,
     SessionControls,
     SizingRejected,
+    TradeLedger,
+    authorize_order,
     check_can_enter,
     ndx_exposure,
     profile_for,
     rank_candidates,
     score_candidate,
+    should_exit,
+    should_rotate,
     size_trade,
 )
 from strategy.medik_mtf import OHLCV, drop_forming_bar
@@ -211,94 +230,174 @@ def place_bracket(ib, contract, sized, controls: SessionControls) -> bool:
 # ----------------------------------------------------------------------- main
 
 
-def main() -> None:
+def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
+              open_trade: OpenTrade | None) -> OpenTrade | None:
+    """One scan cycle. Returns the open trade after this cycle, or None.
+
+    Order of business: read account -> manage any open position -> if flat,
+    score the universe, rank it, size the best, run the authorisation
+    checklist, and submit automatically if every check passes.
+    """
     now = datetime.now(NY)
     market_is_open = _market_open(now)
-    log("=" * 66)
-    log(f"MEDIK ETF ACTIVE LIVE — {now:%Y-%m-%d %H:%M} ET "
-        f"({'OPEN' if market_is_open else 'CLOSED'})")
+    now_min = _now_minutes(now)
+    now_ts = time.time()
 
+    state = read_portfolio(ib)
+    if state.net_liquidation <= 0:
+        log("account data unavailable this cycle — NO ORDER")
+        return open_trade
+
+    exposure = ndx_exposure(state.positions)
+    log(f"equity ${state.net_liquidation:,.2f}  buying power ${state.available_cash:,.2f}  "
+        f"NDX-beta exposure ${exposure:,.2f} ({exposure / state.net_liquidation:.0%})")
+    log(f"positions: {[(p.symbol, round(p.market_value, 2)) for p in state.positions] or 'none'}")
+
+    # ---- score the universe first: needed to manage the position as well as
+    # to find a new one.
+    scores, contracts = {}, {}
+    for symbol in ETF_UNIVERSE:
+        built = build_snapshot(ib, symbol, market_is_open)
+        if built is None:
+            continue
+        snap, contract = built
+        contracts[symbol] = contract
+        cs = score_candidate(snap)
+        scores[symbol] = cs
+
+    ranked = rank_candidates(list(scores.values()))
+    top = ranked[:5]
+    if top:
+        log("top candidates: " + ", ".join(
+            f"{c.symbol}={c.score:.0f}" for c in top))
+    for c in sorted(scores.values(), key=lambda x: -x.score)[:5]:
+        detail = ", ".join(c.reasons) if c.signal == "TRADE" else "; ".join(c.rejections)
+        log(f"  {c.symbol:<5} ${c.price:>8.2f} 15m={c.trend_15m:<7} "
+            f"RSI={c.rsi:>5.1f} RVOL={c.rvol:>5.2f} score={c.score:>5.1f} "
+            f"{c.signal:<7} {detail}")
+
+    # ---- manage an existing position
+    if open_trade is not None:
+        current = scores.get(open_trade.symbol)
+        price = current.price if current else open_trade.entry
+        exiting, why = should_exit(open_trade, current, price, now_min)
+        if exiting:
+            log(f"EXIT {open_trade.symbol}: {why}")
+            if armed:
+                flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity, why)
+                controls.trades_completed += 1
+            return None
+        if ranked:
+            rotate, rwhy = should_rotate(open_trade, current, ranked[0], price)
+            log(f"rotation: {'YES — ' + rwhy if rotate else 'no — ' + rwhy}")
+            if rotate and armed:
+                flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity, rwhy)
+                controls.trades_completed += 1
+                return None
+        log(f"holding {open_trade.symbol} x{open_trade.quantity} "
+            f"(stop ${open_trade.stop:.2f} target ${open_trade.target:.2f})")
+        return open_trade
+
+    # ---- look for a new entry
+    if not ranked:
+        log("no qualifying setup — NO ORDER")
+        return None
+
+    best = ranked[0]
+    try:
+        sized = size_trade(best, state)
+    except SizingRejected as exc:
+        log(f"{best.symbol}: {exc} — NO ORDER")
+        return None
+
+    log(f"SELECTED {sized.symbol} score {best.score:.1f} "
+        f"leverage {profile_for(sized.symbol).leverage}x — {', '.join(best.reasons)}")
+    log(f"  allocation ${sized.notional:,.2f} "
+        f"({sized.notional / state.available_cash:.0%} of buying power, "
+        f"limit {MAX_CAPITAL_UTILIZATION:.0%})  qty {sized.quantity} whole shares")
+    log(f"  entry ${sized.entry:,.2f}  stop ${sized.stop:,.2f}  "
+        f"target ${sized.target:,.2f}  R:R {sized.reward_risk:.1f}:1")
+    log(f"  risk ${sized.risk_dollars:,.2f} "
+        f"({sized.risk_dollars / state.net_liquidation:.2%} of equity)  "
+        f"binding cap: {sized.binding_cap}")
+
+    auth = authorize_order(
+        live_enabled=armed, connected=ib.isConnected(), state=state,
+        controls=controls, candidate=best, sized=sized,
+        now_minutes=now_min, ledger=ledger, now_ts=now_ts,
+    )
+    if not auth:
+        log(f"NO ORDER — failed checks: {', '.join(auth.failures)}")
+        return None
+
+    # Authorised by the checklist alone. No interactive confirmation.
+    ledger.mark_pending(sized.symbol)
+    ok = place_bracket(ib, contracts[sized.symbol], sized, controls)
+    if not ok:
+        ledger.mark_failed(sized.symbol)
+        log(f"ENTRIES DISABLED: {controls.disabled_reason}")
+        return None
+
+    ledger.mark_entered(sized.symbol, now_ts)
+    controls.trades_completed += 1
+    return OpenTrade(sized.symbol, sized.quantity, sized.entry, sized.stop,
+                     sized.target, now_ts)
+
+
+def main() -> None:
     armed = live_enabled()
-    if not armed:
-        log("LIVE ETF TRADING DISABLED "
-            f"({LIVE_ENV_VAR} is not exactly 'true') — scanning only, no orders")
     log("=" * 66)
+    log("MEDIK ETF ACTIVE LIVE")
+    log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
+    log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
+    log(f"SCAN INTERVAL: {SCAN_INTERVAL_SEC // 60} MINUTES")
+    if not armed:
+        log(f"LIVE ETF TRADING DISABLED ({LIVE_ENV_VAR} is not exactly 'true') "
+            "— scanning only, no orders will be sent")
 
     client = IBKRClient()
     ib = client.connect(retries=2)
+    log(f"IBKR: {'CONNECTED' if ib.isConnected() else 'NOT CONNECTED'}")
+    log("=" * 66)
+    controls = None
+    ledger = TradeLedger()
+    open_trade: OpenTrade | None = None
+
     try:
         accounts = ib.managedAccounts()
         state = read_portfolio(ib)
         if not accounts or state.net_liquidation <= 0:
-            log("PRE-FLIGHT FAILED: account or equity unavailable — NO TRADE")
+            log("PRE-FLIGHT FAILED: account or equity unavailable — exiting")
             return
-
         controls = SessionControls(equity_start_of_session=state.net_liquidation)
-        log(f"account {', '.join(accounts)}  equity ${state.net_liquidation:,.2f}  "
-            f"cash ${state.available_cash:,.2f}")
-        log(f"positions: {[(p.symbol, round(p.market_value, 2)) for p in state.positions] or 'none'}")
-        log(f"Nasdaq-beta exposure: ${ndx_exposure(state.positions):,.2f} "
-            f"({ndx_exposure(state.positions) / state.net_liquidation:.0%} of equity)")
+        log(f"account {', '.join(accounts)}  session equity baseline "
+            f"${state.net_liquidation:,.2f}")
 
-        can_enter, why = check_can_enter(state, controls, _now_minutes(now))
-        log(f"entry gate: {'OPEN' if can_enter else 'CLOSED — ' + why}\n")
+        while True:
+            now = datetime.now(NY)
+            if not _market_open(now):
+                if open_trade is not None:
+                    log("market closed with a position still open — "
+                        "protective legs are GTC and remain working")
+                log(f"market closed at {now:%H:%M} ET — exiting loop")
+                break
 
-        scores, contracts = [], {}
-        for symbol in ETF_UNIVERSE:
-            built = build_snapshot(ib, symbol, market_is_open)
-            if built is None:
-                continue
-            snap, contract = built
-            contracts[symbol] = contract
-            cs = score_candidate(snap)
-            scores.append(cs)
-            detail = ", ".join(cs.reasons) if cs.reasons else ""
-            reject = "; ".join(cs.rejections)
-            log(f"  {cs.symbol:<5} ${cs.price:>8.2f} 15m={cs.trend_15m:<7} "
-                f"RSI={cs.rsi:>5.1f} RVOL={cs.rvol:>5.2f} "
-                f"vwap{'+' if cs.price > cs.vwap else '-'} "
-                f"score={cs.score:>5.1f} {cs.signal:<7} {detail or reject}")
+            log("-" * 66)
+            log(f"scan @ {now:%H:%M:%S} ET")
+            try:
+                open_trade = scan_once(ib, armed, controls, ledger, open_trade)
+            except Exception as exc:  # one bad cycle must not kill the run
+                controls.execution_errors += 1
+                log(f"CYCLE ERROR ({controls.execution_errors}): {exc!r}")
+                if controls.execution_errors >= 3:
+                    controls.disable(f"repeated execution errors: {exc!r}")
+                    log(f"ENTRIES DISABLED: {controls.disabled_reason}")
 
-        ranked = rank_candidates(scores)
-        log("")
-        if not ranked:
-            log("no qualifying setup — NO TRADE")
-            return
-        log(f"ranked: {[(c.symbol, c.score) for c in ranked]}")
-        best = ranked[0]
+            if controls.entries_disabled and open_trade is None:
+                log(f"entries disabled ({controls.disabled_reason}) and flat — exiting")
+                break
 
-        try:
-            sized = size_trade(best, state)
-        except SizingRejected as exc:
-            log(f"{best.symbol}: {exc}")
-            return
-
-        log("")
-        log(f"SELECTED {sized.symbol}  score {best.score:.1f}  "
-            f"leverage {profile_for(sized.symbol).leverage}x")
-        log(f"  qty {sized.quantity} whole shares @ ${sized.entry:,.2f} "
-            f"= ${sized.notional:,.2f} notional")
-        log(f"  stop ${sized.stop:,.2f}   target ${sized.target:,.2f}   "
-            f"R:R {sized.reward_risk:.1f}:1")
-        log(f"  dollar risk ${sized.risk_dollars:,.2f} "
-            f"({sized.risk_dollars / state.net_liquidation:.2%} of equity)  "
-            f"binding cap: {sized.binding_cap}")
-
-        if not can_enter:
-            log(f"NO TRADE — {why}")
-            return
-        if not armed:
-            log("NO TRADE — LIVE ETF TRADING DISABLED")
-            return
-
-        if input(f'  Type "BUY {sized.symbol}" to place this bracket: ').strip() \
-                != f"BUY {sized.symbol}":
-            log("NO TRADE — not confirmed")
-            return
-
-        ok = place_bracket(ib, contracts[sized.symbol], sized, controls)
-        log("position open and protected" if ok
-            else f"ENTRIES DISABLED: {controls.disabled_reason}")
+            ib.sleep(SCAN_INTERVAL_SEC)
     finally:
         client.disconnect()
         log("disconnected")

@@ -5,3 +5,6 @@ __pycache__/
 venv/
 journal.sqlite
 logs/
+
+# Cached historical bars — large, regenerable via examples/fetch_etf_intraday.py
+data/etf_intraday/

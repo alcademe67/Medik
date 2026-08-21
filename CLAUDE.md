@@ -361,7 +361,38 @@ connector, so Claude cannot clear them.
 - **Unattended/hands-free automation is allowed ONLY against the paper
   account** (`examples/autotrade_paper.py`: TWS paper port 7497, aborts
   unless every managed account id starts with "D"). The live account
-  always keeps a human tap between signal and execution.
+  always keeps a human tap between signal and execution — with ONE
+  explicit, owner-authorised exception, below.
+- **EXCEPTION — `examples/medik_etf_live.py` submits live orders
+  automatically** (owner decision, 2026-08-21). Once `MEDIK_ETF_LIVE=true`
+  it runs a continuous market-hours loop and sends qualifying ETF orders
+  with no per-order confirmation. The owner asked for this specifically and
+  in detail, overriding their own earlier rule for this strategy alone.
+  **The scope is exactly one file.** Every other order path in this repo
+  still requires a human: `ibkr/orders.py` keeps `confirm=True`,
+  `place_core_holding.py` and `medik_mtf_live.py` keep their typed prompts,
+  and `service/` still only QUEUES. Do not generalise this exception, and
+  do not add an equivalent to any other strategy without the owner asking
+  for it as explicitly as they did here.
+  **What replaced the human tap** — not nothing, but
+  `strategy.medik_etf.authorize_order()`, a pure function running 18
+  deterministic checks (live flag, connection, account data, buying power,
+  market data, setup validity, whole-share size, stop, target, reward/risk,
+  risk ceiling, capital utilisation, conflicting position, conflicting
+  order, duplicate suppression, session gates, entries-enabled). Identical
+  inputs always produce an identical decision, and **no model output ever
+  authorises a trade** — that was a stated requirement and it must stay
+  true. Risk controls are unchanged: 0.5% risk per trade with a 1.0%
+  ceiling, ATR stop, 1.5R target, whole shares only, one position, three
+  trades per session, 2% daily loss limit, and mandatory bracket
+  verification that flattens the position if a protective leg fails.
+  `MAX_CAPITAL_UTILIZATION = 0.90` is an ALLOCATION ceiling, not a loss
+  limit — the risk ceiling binds independently and whichever is tighter
+  wins, so raising it cannot increase dollars at risk.
+  **The expectancy caveat still stands.** This strategy has never been
+  backtested; the related MTF strategy tested to −41%/yr at ~$290 of
+  equity, and nothing about automating execution improves expectancy. Say
+  so if asked whether to run it.
 - The live TWS socket is 127.0.0.1:7496; scripts here only work while the
   owner's TWS is open and logged in.
 - **`service/` (added 2026-08-03)** — a Windows background service
