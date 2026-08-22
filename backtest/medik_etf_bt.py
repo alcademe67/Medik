@@ -371,6 +371,109 @@ def report(results: list[SymbolResult], equity: float, label: str) -> dict:
             "whole_share_skips": ws_skips, "max_drawdown": maxdd}
 
 
+# ===========================================================================
+# PROMOTION GATES
+#
+# The decision to move a strategy toward live money should be mechanical,
+# not a judgement call made while looking at a table you want to like. These
+# thresholds are checked against the OUT-OF-SAMPLE window only -- the
+# in-sample result is where the strategy was designed, so passing there
+# proves nothing.
+#
+# Why each threshold is where it is:
+#
+#   net profit factor >= 1.30
+#       Not 1.0. The gate and pullback strategies in this repo had a GROSS
+#       profit factor of 1.03 and still lost ~36% of the account after
+#       costs. A bar of "better than break-even" is passed by noise; 1.30
+#       net leaves room for the estimate to be wrong.
+#
+#   at least 30 out-of-sample trades
+#       Below roughly 30, one outlier decides the result. This is the gate
+#       most likely to fail, and failing it is itself a finding: a strategy
+#       that rarely triggers cannot be validated, whatever its win rate
+#       looks like.
+#
+#   expectancy >= 2x the average round-trip cost
+#       The trade must be worth DOING, not merely non-negative. An
+#       expectancy of a few cents against a $1.50 round trip is a strategy
+#       that pays the broker to take risk.
+#
+#   max drawdown <= 15% of starting equity
+#       A result that only arrives via a drawdown the operator would not sit
+#       through is not a usable result.
+# ===========================================================================
+
+MIN_OOS_PROFIT_FACTOR = 1.30
+MIN_OOS_TRADES = 30
+MIN_EXPECTANCY_COST_MULTIPLE = 2.0
+MAX_DRAWDOWN_PCT = 15.0
+
+
+def evaluate_gates(results: list, equity: float) -> dict:
+    """Check the out-of-sample result against every promotion gate."""
+    trades = [t for r in results for t in r.trades]
+    n = len(trades)
+    wins = [t["net"] for t in trades if t["net"] > 0]
+    losses = [t["net"] for t in trades if t["net"] <= 0]
+    gains, pains = sum(wins), -sum(losses)
+
+    net = sum(t["net"] for t in trades)
+    pf = (gains / pains) if pains > 0 else (float("inf") if gains else 0.0)
+    expectancy = net / n if n else 0.0
+    avg_cost = statistics.mean([t["commission"] for t in trades]) if n else 0.0
+
+    curve = peak = equity
+    maxdd = 0.0
+    for t in sorted(trades, key=lambda x: x["entry_time"]):
+        curve += t["net"]
+        peak = max(peak, curve)
+        maxdd = max(maxdd, (peak - curve) / peak * 100.0 if peak > 0 else 0.0)
+
+    gates = [
+        ("net profit factor", pf, MIN_OOS_PROFIT_FACTOR, pf >= MIN_OOS_PROFIT_FACTOR,
+         f"{pf:.2f}" if pf != float("inf") else "inf", f">= {MIN_OOS_PROFIT_FACTOR}"),
+        ("out-of-sample trades", n, MIN_OOS_TRADES, n >= MIN_OOS_TRADES,
+         str(n), f">= {MIN_OOS_TRADES}"),
+        ("expectancy vs cost", expectancy,
+         MIN_EXPECTANCY_COST_MULTIPLE * avg_cost,
+         n > 0 and expectancy >= MIN_EXPECTANCY_COST_MULTIPLE * avg_cost,
+         f"${expectancy:+.3f}", f">= ${MIN_EXPECTANCY_COST_MULTIPLE * avg_cost:.3f}"),
+        ("max drawdown", maxdd, MAX_DRAWDOWN_PCT, maxdd <= MAX_DRAWDOWN_PCT,
+         f"{maxdd:.1f}%", f"<= {MAX_DRAWDOWN_PCT}%"),
+        ("net P&L positive", net, 0.0, net > 0, f"${net:+,.2f}", "> $0"),
+    ]
+    return {
+        "gates": gates,
+        "promote": all(g[3] for g in gates),
+        "trades": n, "net": net, "profit_factor": pf,
+        "expectancy": expectancy, "avg_cost": avg_cost, "max_drawdown": maxdd,
+    }
+
+
+def print_gate_report(verdict: dict) -> None:
+    print(f"\n{'=' * 92}")
+    print("PROMOTION GATES — evaluated on the OUT-OF-SAMPLE window only")
+    print("=" * 92)
+    print(f"{'gate':<24}{'measured':>14}{'required':>18}   result")
+    print("-" * 92)
+    for name, _, _, passed, shown, required in verdict["gates"]:
+        print(f"{name:<24}{shown:>14}{required:>18}   {'PASS' if passed else 'FAIL'}")
+    print("-" * 92)
+    if verdict["promote"]:
+        print("VERDICT: GREEN — every gate passed on unseen data.")
+        print("  Next step is IBKR PAPER (MEDIK_ETF_MODE=paper, port 7497),")
+        print("  then kill-switch and reconciliation testing, then SMALL LIVE.")
+        print("  Passing here is permission to test further, not to size up.")
+    else:
+        failed = [g[0] for g in verdict["gates"] if not g[3]]
+        print(f"VERDICT: RED — failed: {', '.join(failed)}")
+        print("  DO NOT enable live trading. Do not retune parameters against this")
+        print("  out-of-sample window either — that converts it into in-sample data")
+        print("  and there is no clean test left afterwards.")
+    print("=" * 92)
+
+
 def main() -> None:
     """Parse args strictly.
 
@@ -445,7 +548,10 @@ def main() -> None:
         ins.append(backtest_symbol(s, b, t, equity, 0, cut))
         oos.append(backtest_symbol(s, b, t, equity, cut))
     report(ins, equity, "IN-SAMPLE (first 60%)")
-    report(oos, equity, "OUT-OF-SAMPLE (final 40%) — parameters unchanged")
+    oos_stats = report(oos, equity, "OUT-OF-SAMPLE (final 40%) — parameters unchanged")
+    verdict = evaluate_gates(oos, equity)
+    print_gate_report(verdict)
+    sys.exit(0 if verdict["promote"] else 1)
 
 
 if __name__ == "__main__":
