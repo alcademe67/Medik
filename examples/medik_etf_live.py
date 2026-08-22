@@ -463,20 +463,11 @@ def main() -> None:
     armed, arming_lines = arming_report()
     log("=" * 66)
     log("MEDIK ETF ACTIVE LIVE")
-    for line in arming_lines:
-        log(line)
-    log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
-    log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
-    log(f"SCAN INTERVAL: {SCAN_INTERVAL_SEC // 60} MINUTES")
-    if not armed:
-        log("LIVE ETF TRADING DISABLED — both "
-            f"{LIVE_ENV_VAR}=true and {RISK_ACK_ENV_VAR}=true are required. "
-            "Scanning only, no orders will be sent.")
+    log("=" * 66)
 
     client = IBKRClient()
     ib = client.connect(retries=2)
     log(f"IBKR: {'CONNECTED' if ib.isConnected() else 'NOT CONNECTED'}")
-    log("=" * 66)
     controls = None
     ledger = TradeLedger()
     open_trade: OpenTrade | None = None
@@ -485,23 +476,38 @@ def main() -> None:
     try:
         accounts = ib.managedAccounts()
         state = read_portfolio(ib)
-        if not accounts or state.net_liquidation <= 0:
-            log("PRE-FLIGHT FAILED: account or equity unavailable — exiting")
-            return
+        log(f"ACCOUNT: {', '.join(accounts) if accounts else 'UNAVAILABLE'}")
+        log(f"NET LIQUIDATION: ${state.net_liquidation:,.2f}")
+        log(f"AVAILABLE FUNDS: ${state.available_cash:,.2f}")
 
-        # Paper must be PROVEN, not assumed from a port number.
+        # Preflight is a single explicit verdict, so a failed start can never
+        # be mistaken for a quiet one.
         mode = os.environ.get(MODE_ENV_VAR, "")
         mode_ok, mode_msg = verify_account_mode(mode, list(accounts), client.port)
-        log(f"mode: {mode_msg}")
+        failures = []
+        if not ib.isConnected():
+            failures.append("not connected to IBKR")
+        if not accounts:
+            failures.append("no managed accounts")
+        if state.net_liquidation <= 0:
+            failures.append("net liquidation unavailable or zero")
         if not mode_ok:
-            log(f"PRE-FLIGHT FAILED: set {MODE_ENV_VAR}=paper or {MODE_ENV_VAR}=live "
-                "to match the account you are connected to — exiting")
+            failures.append(mode_msg)
+
+        log(f"MODE: {mode_msg}")
+        log(f"ACCOUNT PREFLIGHT: {'PASS' if not failures else 'FAIL'}")
+        if failures:
+            for f in failures:
+                log(f"  FAIL | {f}")
+            log(f"  set {MODE_ENV_VAR}=paper or {MODE_ENV_VAR}=live to match the "
+                "account you are connected to")
+            log("EXITING — no scan, no orders")
             return
         if mode.strip().lower() == "paper":
-            log("PAPER MODE — orders are simulated; the live gate still applies")
+            log("PAPER MODE — fills come from IBKR's paper account, not from "
+                "this program; the live gate still applies")
+
         controls = SessionControls(equity_start_of_session=state.net_liquidation)
-        log(f"account {', '.join(accounts)}  session equity baseline "
-            f"${state.net_liquidation:,.2f}")
 
         # RECONCILE. A restart loses the in-memory position, so rebuild it
         # from the broker's own working orders. Without this the bot would
@@ -530,6 +536,16 @@ def main() -> None:
             log(f"RECONCILIATION | resuming management of {open_trade.symbol} "
                 f"x{open_trade.quantity} stop ${open_trade.stop:,.2f} "
                 f"target ${open_trade.target:,.2f}")
+
+        for line in arming_lines:
+            log(line)
+        log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
+        log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
+        log(f"SCAN INTERVAL: {SCAN_INTERVAL_SEC // 60} MINUTES")
+        if not armed:
+            log(f"LIVE ETF TRADING DISABLED — both {LIVE_ENV_VAR}=true and "
+                f"{RISK_ACK_ENV_VAR}=true are required. Scanning only.")
+        log("=" * 66)
 
         if not decision.may_trade:
             controls.disable(
