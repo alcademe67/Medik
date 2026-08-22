@@ -513,9 +513,18 @@ def size_trade(
     # floors and refuses below one share.
     quantity = int(math.floor(raw_qty))
     if quantity < 1:
+        # Report EVERY cap, not just the binding one. "quantity below 1" on
+        # its own tells the operator nothing actionable; the four numbers
+        # say whether the blocker is risk, capital, cash or correlation, and
+        # therefore what would have to change.
+        detail = "  ".join(
+            f"{name}={caps[name] * entry:,.2f}" for name in
+            ("risk_per_trade", "position_notional", "available_cash", "ndx_exposure")
+        )
         raise SizingRejected(
-            f"SKIP: quantity below 1 whole share "
-            f"({raw_qty:.4f} at ${entry:.2f}, binding cap: {binding_cap})"
+            f"SKIP: quantity below 1 whole share — {candidate.symbol} at "
+            f"${entry:,.2f} allows {raw_qty:.4f} shares. "
+            f"Binding cap: {binding_cap}. Caps in dollars: {detail}"
         )
 
     return SizedTrade(

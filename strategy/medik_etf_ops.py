@@ -170,17 +170,32 @@ def adopt_open_position(
 class StartupDecision:
     """Outcome of comparing broker state against bot state.
 
-        START  -- flat, nothing to reconcile
-        ADOPT  -- a position with a valid bracket; resume managing it
-        REFUSE -- do not trade; a human must look
+        START         -- flat, nothing to reconcile
+        ADOPT         -- a position with a valid bracket; resume managing it
+        BLOCK_ENTRIES -- an unmanaged position exists. The loop RUNS (so it
+                         keeps reporting and honours the kill switch) but
+                         takes no new entries until a human acts.
+        REFUSE        -- the account state is incoherent; do not run at all.
+
+    BLOCK_ENTRIES rather than REFUSE for an unmanaged holding is deliberate.
+    Exiting on startup leaves nothing watching the account; staying up with
+    entries disabled keeps the kill switch live, keeps logging, and keeps
+    managing anything that IS adopted.
     """
-    action: str                    # "START" | "ADOPT" | "REFUSE"
+    action: str
     adopted: OpenTrade | None
     notes: tuple
+    unmanaged: tuple = ()          # symbols held without a valid bracket
 
     @property
     def may_trade(self) -> bool:
+        """True when NEW ENTRIES are permitted."""
         return self.action in ("START", "ADOPT")
+
+    @property
+    def may_run(self) -> bool:
+        """True when the loop should start at all."""
+        return self.action != "REFUSE"
 
 
 def reconcile_startup(
@@ -203,6 +218,7 @@ def reconcile_startup(
     """
     notes: list[str] = []
     adopted: OpenTrade | None = None
+    unmanaged: list[str] = []
     refuse = False
 
     for pos in positions:
@@ -215,25 +231,35 @@ def reconcile_startup(
             continue
 
         if pos.symbol not in universe:
-            notes.append(f"{pos.symbol}: UNEXPECTED position of {pos.quantity} shares, "
-                         "outside the ETF universe and not in ignore_symbols")
-            refuse = True
+            notes.append(f"UNMANAGED POSITION: {pos.symbol}")
+            notes.append(f"  {pos.quantity} shares held, outside the ETF universe")
+            notes.append("  ACTION REQUIRED: close it, or add it to IGNORE_SYMBOLS")
+            unmanaged.append(pos.symbol)
             continue
 
         result = adopt_open_position(pos, working_orders)
-        notes.append(result.reason)
         if result.adopted is not None:
+            notes.append(result.reason)
             if adopted is None:
                 adopted = result.adopted
             else:
                 notes.append("more than one adoptable position — the one-position "
-                             "rule is already violated")
+                             "rule is already violated, refusing to run")
                 refuse = True
         else:
-            refuse = True          # position without a valid bracket
+            notes.append(f"UNMANAGED POSITION: {pos.symbol}")
+            notes.append(f"  {result.reason}")
+            notes.append("  ACTION REQUIRED: restore its bracket in TWS, close it, "
+                         "or add it to IGNORE_SYMBOLS")
+            unmanaged.append(pos.symbol)
 
     if refuse:
-        return StartupDecision("REFUSE", None, tuple(notes))
+        return StartupDecision("REFUSE", None, tuple(notes), tuple(unmanaged))
+    if unmanaged:
+        notes.append("NEW ENTRIES BLOCKED while an unmanaged position exists. The "
+                     "loop stays up: kill switch live, logging on, adopted "
+                     "positions still managed.")
+        return StartupDecision("BLOCK_ENTRIES", adopted, tuple(notes), tuple(unmanaged))
     if adopted is not None:
-        return StartupDecision("ADOPT", adopted, tuple(notes))
-    return StartupDecision("START", None, tuple(notes or ["flat at startup"]))
+        return StartupDecision("ADOPT", adopted, tuple(notes), ())
+    return StartupDecision("START", None, tuple(notes or ["flat at startup"]), ())

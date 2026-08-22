@@ -518,17 +518,25 @@ def main() -> None:
         decision = reconcile_startup(list(state.positions), working, ETF_UNIVERSE,
                                      ignore_symbols=IGNORE_SYMBOLS)
         for note in decision.notes:
-            log(f"reconcile: {note}")
-        log(f"reconcile: decision = {decision.action}")
-        if not decision.may_trade:
-            log("REFUSING TO TRADE. The bot's model of the account does not match "
-                "the broker. Close the position, restore its bracket in TWS, or add "
-                "the symbol to IGNORE_SYMBOLS if it is a holding this strategy "
-                "should leave alone.")
+            log(f"RECONCILIATION | {note}")
+        log(f"RECONCILIATION | decision = {decision.action}")
+
+        if not decision.may_run:
+            log("ERROR | account state is incoherent — not starting")
             return
+
         open_trade = decision.adopted
         if open_trade is not None:
-            log(f"resuming management of {open_trade.symbol} x{open_trade.quantity}")
+            log(f"RECONCILIATION | resuming management of {open_trade.symbol} "
+                f"x{open_trade.quantity} stop ${open_trade.stop:,.2f} "
+                f"target ${open_trade.target:,.2f}")
+
+        if not decision.may_trade:
+            controls.disable(
+                "unmanaged position: " + ", ".join(decision.unmanaged))
+            log(f"ERROR | NEW ENTRIES BLOCKED — {controls.disabled_reason}")
+            log("ERROR | the loop will run, report and honour STOP_MEDIK, but will "
+                "not open a position until this is resolved")
 
         while True:
             now = datetime.now(NY)
@@ -560,8 +568,10 @@ def main() -> None:
                     controls.disable(f"repeated execution errors: {exc!r}")
                     log(f"ENTRIES DISABLED: {controls.disabled_reason}")
 
-            if controls.entries_disabled and open_trade is None:
-                log(f"entries disabled ({controls.disabled_reason}) and flat — exiting")
+            if (controls.entries_disabled and open_trade is None
+                    and not controls.disabled_reason.startswith("unmanaged position")):
+                log(f"ERROR | entries disabled ({controls.disabled_reason}) and "
+                    "flat — exiting")
                 break
 
             # Sleep in slices so the kill switch is honoured within ~10s

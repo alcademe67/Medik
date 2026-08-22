@@ -141,17 +141,25 @@ def test_position_with_valid_bracket_is_adopted():
     assert d.adopted.symbol == "TQQQ"
 
 
-def test_position_with_missing_bracket_refuses():
+def test_position_with_missing_bracket_blocks_entries():
+    """Unmanaged: no NEW entries, but the loop stays up so the kill switch
+    remains live and the position keeps being reported."""
     d = reconcile_startup([_pos()], [], UNIVERSE)
-    assert d.action == "REFUSE" and not d.may_trade
+    assert d.action == "BLOCK_ENTRIES"
+    assert d.may_trade is False
+    assert d.may_run is True
     assert d.adopted is None
+    assert "TQQQ" in d.unmanaged
 
 
-def test_unexpected_position_refuses():
-    """A holding outside the universe means the bot's model is already wrong."""
+def test_unexpected_position_blocks_entries():
+    """A holding outside the universe means the bot's model is already wrong,
+    so it must not open anything new — but it should keep running and say so."""
     d = reconcile_startup([_pos("AAPL", 10, 2000.0)], [], UNIVERSE)
-    assert d.action == "REFUSE"
-    assert any("UNEXPECTED" in n for n in d.notes)
+    assert d.action == "BLOCK_ENTRIES"
+    assert d.may_trade is False
+    assert any("UNMANAGED POSITION: AAPL" in n for n in d.notes)
+    assert any("ACTION REQUIRED" in n for n in d.notes)
 
 
 def test_an_ignored_symbol_does_not_block_startup():
@@ -161,14 +169,17 @@ def test_an_ignored_symbol_does_not_block_startup():
     assert any("explicitly ignored" in n for n in d.notes)
 
 
-def test_the_core_holding_blocks_by_default():
-    """QQQ is in the universe with no bracket, so the default is REFUSE.
+def test_the_core_holding_blocks_entries_by_default():
+    """QQQ held with no bracket is the live account's actual state.
 
-    This is the live account's actual state, and it is the safe answer: the
-    strategy must not silently adopt a long-term holding as an intraday trade.
+    The strategy must not silently adopt a decades-horizon holding as an
+    intraday trade, so entries are blocked — but the loop runs, reports
+    UNMANAGED POSITION: QQQ, and honours STOP_MEDIK.
     """
     d = reconcile_startup([_pos("QQQ", 0.2836, 203.11)], [], UNIVERSE)
-    assert d.action == "REFUSE"
+    assert d.action == "BLOCK_ENTRIES"
+    assert d.may_run is True and d.may_trade is False
+    assert "QQQ" in d.unmanaged
 
 
 def test_two_adoptable_positions_refuse():
