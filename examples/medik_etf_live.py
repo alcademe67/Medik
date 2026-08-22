@@ -83,6 +83,7 @@ from strategy.medik_mtf import OHLCV, drop_forming_bar
 
 NY = ZoneInfo("America/New_York")
 LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
+RISK_ACK_ENV_VAR = "LIVE_RISK_ACK"
 PROTECTION_TIMEOUT_SEC = 10
 
 # Holdings this strategy must LEAVE ALONE rather than adopt or refuse over.
@@ -100,6 +101,37 @@ def log(msg: str) -> None:
 def live_enabled() -> bool:
     """Exact-match opt-in. Never inferred, never truthy-ish."""
     return os.environ.get(LIVE_ENV_VAR, "") == "true"
+
+
+def risk_acknowledged() -> bool:
+    """Second key. Both must be turned for the bot to send an order.
+
+    MEDIK_ETF_LIVE says "this program may trade". LIVE_RISK_ACK says "I have
+    read what it is about to risk". They are separate because the first is
+    easy to leave set in a shell profile or a scheduled task, and a single
+    forgotten variable should not be the only thing between a scan and a
+    live order.
+    """
+    return os.environ.get(RISK_ACK_ENV_VAR, "") == "true"
+
+
+def arming_report() -> tuple[bool, list[str]]:
+    """(armed, human-readable lines) describing exactly which keys are set.
+
+    Also catches plausible-but-wrong variable names. Setting LIVE_TRADING
+    instead of MEDIK_ETF_LIVE fails safe, but silently -- the operator would
+    see a clean startup and assume it was armed.
+    """
+    live, ack = live_enabled(), risk_acknowledged()
+    lines = [
+        f"  {LIVE_ENV_VAR:<16} {'SET' if live else 'not set'}",
+        f"  {RISK_ACK_ENV_VAR:<16} {'SET' if ack else 'not set'}",
+    ]
+    for wrong in ("LIVE_TRADING", "MEDIK_LIVE", "ETF_LIVE"):
+        if os.environ.get(wrong):
+            lines.append(f"  WARNING: {wrong} is set but is NOT a recognised "
+                         f"variable — did you mean {LIVE_ENV_VAR}?")
+    return (live and ack), lines
 
 
 def _to_bars(raw) -> list[OHLCV]:
@@ -426,15 +458,18 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
 
 
 def main() -> None:
-    armed = live_enabled()
+    armed, arming_lines = arming_report()
     log("=" * 66)
     log("MEDIK ETF ACTIVE LIVE")
+    for line in arming_lines:
+        log(line)
     log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
     log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
     log(f"SCAN INTERVAL: {SCAN_INTERVAL_SEC // 60} MINUTES")
     if not armed:
-        log(f"LIVE ETF TRADING DISABLED ({LIVE_ENV_VAR} is not exactly 'true') "
-            "— scanning only, no orders will be sent")
+        log("LIVE ETF TRADING DISABLED — both "
+            f"{LIVE_ENV_VAR}=true and {RISK_ACK_ENV_VAR}=true are required. "
+            "Scanning only, no orders will be sent.")
 
     client = IBKRClient()
     ib = client.connect(retries=2)

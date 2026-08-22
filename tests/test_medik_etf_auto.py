@@ -352,3 +352,58 @@ def test_rotation_handles_a_vanished_incumbent():
     challenger = _cs("SOXL", ROTATION_MIN_SCORE_MARGIN + 10)
     rotate, _ = should_rotate(_trade(), None, challenger, 49.0)
     assert rotate is True
+
+
+# ------------------------------------------------- two-key live arming
+
+
+def _live_mod():
+    import importlib.util, sys, types
+    if "ib_async" not in sys.modules:
+        stub = types.ModuleType("ib_async")
+        for n in ("IB", "Stock", "LimitOrder", "MarketOrder", "Trade"):
+            setattr(stub, n, type(n, (), {}))
+        sys.modules["ib_async"] = stub
+    spec = importlib.util.spec_from_file_location(
+        "medik_etf_live_arm", "examples/medik_etf_live.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_both_keys_are_required_to_arm(monkeypatch):
+    live = _live_mod()
+    for a, b, expected in [("true", "true", True), ("true", "", False),
+                           ("", "true", False), ("", "", False)]:
+        monkeypatch.setenv(live.LIVE_ENV_VAR, a)
+        monkeypatch.setenv(live.RISK_ACK_ENV_VAR, b)
+        armed, _ = live.arming_report()
+        assert armed is expected, f"{a!r}/{b!r}"
+
+
+def test_risk_ack_requires_exactly_true(monkeypatch):
+    live = _live_mod()
+    monkeypatch.setenv(live.LIVE_ENV_VAR, "true")
+    for value in ("TRUE", "1", "yes", "True", " true "):
+        monkeypatch.setenv(live.RISK_ACK_ENV_VAR, value)
+        assert live.arming_report()[0] is False, value
+
+
+def test_a_wrong_variable_name_is_called_out(monkeypatch):
+    """LIVE_TRADING fails safe, but silently — so say so loudly."""
+    live = _live_mod()
+    monkeypatch.delenv(live.LIVE_ENV_VAR, raising=False)
+    monkeypatch.delenv(live.RISK_ACK_ENV_VAR, raising=False)
+    monkeypatch.setenv("LIVE_TRADING", "true")
+    armed, lines = live.arming_report()
+    assert armed is False
+    assert any("LIVE_TRADING" in l and "NOT a recognised" in l for l in lines)
+
+
+def test_arming_report_states_each_key(monkeypatch):
+    live = _live_mod()
+    monkeypatch.setenv(live.LIVE_ENV_VAR, "true")
+    monkeypatch.delenv(live.RISK_ACK_ENV_VAR, raising=False)
+    _, lines = live.arming_report()
+    assert any(live.LIVE_ENV_VAR in l and "SET" in l for l in lines)
+    assert any(live.RISK_ACK_ENV_VAR in l and "not set" in l for l in lines)
