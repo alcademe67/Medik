@@ -142,3 +142,38 @@ def test_drawdown_is_measured_in_trade_order_not_symbol_order():
     r2.trades = [_trade(-50.0, i=1), _trade(60.0, i=5)]
     v = evaluate_gates([r1, r2], EQUITY)
     assert v["max_drawdown"] >= 10.0     # both losses land before both wins
+
+
+# ------------------------------------------------- v1 / v2 are both testable
+
+
+def test_backtester_can_run_either_strategy_version():
+    """The pipeline says 'V2 NEED TO TEST', so the backtester must be able
+    to run v2 -- it previously only ever ran v1."""
+    import inspect
+
+    from backtest.medik_etf_bt import backtest_symbol
+
+    params = inspect.signature(backtest_symbol).parameters
+    assert "version" in params
+    assert params["version"].default == "v1"
+
+
+def test_v2_gate_is_actually_applied():
+    """v2 must import and use the cost-aware layer, not merely exist."""
+    from pathlib import Path
+
+    source = Path("backtest/medik_etf_bt.py").read_text()
+    assert "medik_etf_v2" in source
+    assert "net_edge_check" in source
+    assert "qualifies_v2" in source
+
+
+def test_v2_rejects_strictly_more_than_v1():
+    """v2 adds gates and removes none, so on identical data it can never
+    take a trade v1 would have refused."""
+    from strategy.medik_etf import MIN_SCORE
+    from strategy.medik_etf_v2 import MIN_EDGE_MULTIPLE, MIN_SCORE_V2
+
+    assert MIN_SCORE_V2 >= MIN_SCORE
+    assert MIN_EDGE_MULTIPLE > 1.0

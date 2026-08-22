@@ -55,6 +55,11 @@ from strategy.medik_etf import (
     size_trade,
     within_trading_window,
 )
+from strategy.medik_etf_v2 import (
+    MIN_EDGE_MULTIPLE,
+    net_edge_check,
+    qualifies_v2,
+)
 from strategy.medik_mtf import OHLCV
 
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data" / "etf_intraday"
@@ -179,8 +184,16 @@ class SymbolResult:
 
 
 def backtest_symbol(symbol: str, bars, times, equity: float,
-                    start_idx: int = 0, end_idx: int | None = None) -> SymbolResult:
-    """Single-symbol pass. One position at a time, session controls applied."""
+                    start_idx: int = 0, end_idx: int | None = None,
+                    version: str = "v1") -> SymbolResult:
+    """Single-symbol pass. One position at a time, session controls applied.
+
+    version="v2" additionally applies the cost-aware layer: the stricter
+    technical gate (higher score floor, reclaim required) AND the net-edge
+    check, which rejects a setup whose target cannot clear its own
+    round-trip cost. Both strategies share the same execution model, so the
+    two results are directly comparable.
+    """
     res = SymbolResult(symbol)
     bars15, times15 = to_15m(bars, times)
     end_idx = len(bars) - 1 if end_idx is None else min(end_idx, len(bars) - 1)
@@ -273,6 +286,11 @@ def backtest_symbol(symbol: str, bars, times, equity: float,
         cs = score_candidate(snap)
         if cs.signal != "TRADE":
             continue
+        if version == "v2":
+            ok_v2, _ = qualifies_v2(cs)
+            if not ok_v2:
+                res.skips_other += 1
+                continue
         res.signals += 1
 
         state = PortfolioState(running, running, (), 0)
@@ -289,6 +307,15 @@ def backtest_symbol(symbol: str, bars, times, equity: float,
         stop_d = sized.entry - sized.stop
         stop = fill - stop_d
         target = fill + stop_d * 1.5
+
+        if version == "v2":
+            # v2's central rule: if the target cannot clear the round trip by
+            # MIN_EDGE_MULTIPLE, the setup is technically fine and still not
+            # worth taking.
+            edge = net_edge_check(symbol, sized.quantity, fill, stop, target)
+            if not edge.passes:
+                res.skips_other += 1
+                continue
         entry_fill = fill
         entry_comm = commission(sized.quantity, fill * sized.quantity)
         entry_i = i + 1
@@ -484,6 +511,7 @@ def main() -> None:
     bug in a tool whose whole job is to produce a number you act on.
     """
     equity = 290.0
+    version = "v2"
     symbols: list[str] = []
     argv = sys.argv[1:]
     i = 0
@@ -506,14 +534,16 @@ def main() -> None:
             if equity <= 0:
                 print(f"--equity must be positive, got {equity}")
                 sys.exit(2)
+        elif arg in ("--v1", "--v2"):
+            version = arg[2:]
         elif arg.startswith("--"):
-            print(f"unknown option {arg!r}. Supported: --equity")
+            print(f"unknown option {arg!r}. Supported: --equity, --v1, --v2")
             sys.exit(2)
         else:
             symbols.append(arg)
         i += 1
 
-    print(f"starting equity: ${equity:,.2f}")
+    print(f"strategy: {version}   starting equity: ${equity:,.2f}")
     symbols = symbols or ([p.name for p in sorted(DATA_ROOT.iterdir()) if p.is_dir()]
                           if DATA_ROOT.exists() else [])
     if not symbols:
@@ -538,17 +568,19 @@ def main() -> None:
           f"{min(s[0] for s in spans)[:10]} -> {max(s[1] for s in spans)[:10]}   "
           f"{min(s[2] for s in spans)}-{max(s[2] for s in spans)} bars each")
 
-    full = [backtest_symbol(s, b, t, equity) for s, (b, t) in loaded.items()]
-    report(full, equity, "FULL PERIOD (in-sample + out-of-sample)")
+    full = [backtest_symbol(s, b, t, equity, version=version)
+            for s, (b, t) in loaded.items()]
+    report(full, equity, f"FULL PERIOD ({version}) — in-sample + out-of-sample")
 
     # chronological 60/40 split, parameters never touched between them
     ins, oos = [], []
     for s, (b, t) in loaded.items():
         cut = int(len(b) * 0.60)
-        ins.append(backtest_symbol(s, b, t, equity, 0, cut))
-        oos.append(backtest_symbol(s, b, t, equity, cut))
-    report(ins, equity, "IN-SAMPLE (first 60%)")
-    oos_stats = report(oos, equity, "OUT-OF-SAMPLE (final 40%) — parameters unchanged")
+        ins.append(backtest_symbol(s, b, t, equity, 0, cut, version))
+        oos.append(backtest_symbol(s, b, t, equity, cut, None, version))
+    report(ins, equity, f"IN-SAMPLE ({version}) — first 60%")
+    oos_stats = report(oos, equity,
+                       f"OUT-OF-SAMPLE ({version}) — final 40%, parameters unchanged")
     verdict = evaluate_gates(oos, equity)
     print_gate_report(verdict)
     sys.exit(0 if verdict["promote"] else 1)
