@@ -73,11 +73,24 @@ from strategy.medik_etf import (
     should_rotate,
     size_trade,
 )
+from strategy.medik_etf_ops import (
+    WorkingOrder,
+    kill_switch_active,
+    kill_switch_reason,
+    reconcile_startup,
+)
 from strategy.medik_mtf import OHLCV, drop_forming_bar
 
 NY = ZoneInfo("America/New_York")
 LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
 PROTECTION_TIMEOUT_SEC = 10
+
+# Holdings this strategy must LEAVE ALONE rather than adopt or refuse over.
+# Empty by default on purpose: an exemption should be typed out deliberately.
+# The QQQ buy-and-hold core position is the obvious candidate — but note that
+# adding it does NOT make the bot able to trade QQQ-correlated ETFs, because
+# the Nasdaq-beta cap still counts that exposure.
+IGNORE_SYMBOLS: tuple = ()
 
 
 def log(msg: str) -> None:
@@ -178,6 +191,70 @@ def verify_protection(ib, trade_legs) -> tuple[bool, str]:
     return True, ""
 
 
+def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str) -> bool:
+    """STOP_MEDIK sequence, in this exact order:
+
+        disable entries -> cancel working orders -> flatten -> confirm flat
+
+    Cancelling BEFORE flattening is the part that matters. A resting stop is
+    a live SELL; if the flatten order goes in while the stop is still
+    working, both can fill and the account ends up SHORT -- which this
+    account cannot even hold. Cancel first, then close, then verify.
+    """
+    log("=" * 66)
+    log(f"STOP_MEDIK DETECTED — {reason}" if reason else "STOP_MEDIK DETECTED")
+    log("=" * 66)
+    log("1. new entries disabled")
+
+    log("2. cancelling working orders")
+    cancelled = 0
+    try:
+        ib.reqAllOpenOrders()
+        ib.sleep(1)
+        for trade in ib.openTrades():
+            if trade.orderStatus.status in ("Filled", "Cancelled", "ApiCancelled"):
+                continue
+            if armed:
+                ib.cancelOrder(trade.order)
+            cancelled += 1
+            log(f"   cancel {trade.order.action} {trade.order.totalQuantity} "
+                f"{trade.contract.symbol} {trade.order.orderType} "
+                f"(id {trade.order.orderId})")
+        if cancelled and armed:
+            ib.sleep(3)
+    except Exception as exc:
+        log(f"   ERROR cancelling orders: {exc!r} — NOT flattening while orders "
+            "may still be live; close manually in TWS")
+        return False
+    log(f"   {cancelled} order(s) handled")
+
+    log("3. flattening open position")
+    if open_trade is None:
+        log("   no tracked position")
+    elif not armed:
+        log("   not armed — would flatten, sending nothing")
+    else:
+        flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity, "STOP_MEDIK")
+
+    log("4. confirming flat")
+    try:
+        ib.sleep(2)
+        remaining = [(p.contract.symbol, p.position) for p in ib.positions() if p.position]
+        if not remaining:
+            log("   IBKR reports FLAT")
+            flat = True
+        else:
+            log(f"   STILL HOLDING: {remaining}")
+            log("   CHECK TWS MANUALLY — the process is exiting but the account is not flat")
+            flat = False
+    except Exception as exc:
+        log(f"   could not verify positions: {exc!r} — CHECK TWS MANUALLY")
+        flat = False
+
+    log("5. exiting")
+    return flat
+
+
 def flatten(ib, contract, quantity: int, reason: str) -> None:
     """Emergency exit: close an unprotected position with a marketable order."""
     log(f"  EMERGENCY FLATTEN {contract.symbol} x{quantity} — {reason}")
@@ -231,7 +308,8 @@ def place_bracket(ib, contract, sized, controls: SessionControls) -> bool:
 
 
 def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
-              open_trade: OpenTrade | None) -> OpenTrade | None:
+              open_trade: OpenTrade | None,
+              contract_sink: dict | None = None) -> OpenTrade | None:
     """One scan cycle. Returns the open trade after this cycle, or None.
 
     Order of business: read account -> manage any open position -> if flat,
@@ -264,6 +342,9 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
         contracts[symbol] = contract
         cs = score_candidate(snap)
         scores[symbol] = cs
+
+    if contract_sink is not None:
+        contract_sink.update(contracts)   # so a kill switch can flatten
 
     ranked = rank_candidates(list(scores.values()))
     top = ranked[:5]
@@ -362,6 +443,7 @@ def main() -> None:
     controls = None
     ledger = TradeLedger()
     open_trade: OpenTrade | None = None
+    last_contracts: dict = {}
 
     try:
         accounts = ib.managedAccounts()
@@ -373,8 +455,44 @@ def main() -> None:
         log(f"account {', '.join(accounts)}  session equity baseline "
             f"${state.net_liquidation:,.2f}")
 
+        # RECONCILE. A restart loses the in-memory position, so rebuild it
+        # from the broker's own working orders. Without this the bot would
+        # believe it is flat and silently stop managing a live trade.
+        ib.reqAllOpenOrders()
+        ib.sleep(1)
+        working = [
+            WorkingOrder(t.contract.symbol, t.order.action, t.order.orderType,
+                         float(t.order.totalQuantity or 0),
+                         float(t.order.lmtPrice or t.order.auxPrice or 0))
+            for t in ib.openTrades()
+            if t.orderStatus.status not in ("Filled", "Cancelled", "ApiCancelled")
+        ]
+        decision = reconcile_startup(list(state.positions), working, ETF_UNIVERSE,
+                                     ignore_symbols=IGNORE_SYMBOLS)
+        for note in decision.notes:
+            log(f"reconcile: {note}")
+        log(f"reconcile: decision = {decision.action}")
+        if not decision.may_trade:
+            log("REFUSING TO TRADE. The bot's model of the account does not match "
+                "the broker. Close the position, restore its bracket in TWS, or add "
+                "the symbol to IGNORE_SYMBOLS if it is a holding this strategy "
+                "should leave alone.")
+            return
+        open_trade = decision.adopted
+        if open_trade is not None:
+            log(f"resuming management of {open_trade.symbol} x{open_trade.quantity}")
+
         while True:
             now = datetime.now(NY)
+
+            # Checked FIRST, before market hours and before any scan, so the
+            # switch works whether or not the session is open.
+            if kill_switch_active():
+                controls.disable("STOP_MEDIK")
+                emergency_shutdown(ib, armed, open_trade, last_contracts,
+                                   kill_switch_reason())
+                break
+
             if not _market_open(now):
                 if open_trade is not None:
                     log("market closed with a position still open — "
@@ -385,7 +503,8 @@ def main() -> None:
             log("-" * 66)
             log(f"scan @ {now:%H:%M:%S} ET")
             try:
-                open_trade = scan_once(ib, armed, controls, ledger, open_trade)
+                open_trade = scan_once(ib, armed, controls, ledger, open_trade,
+                                       last_contracts)
             except Exception as exc:  # one bad cycle must not kill the run
                 controls.execution_errors += 1
                 log(f"CYCLE ERROR ({controls.execution_errors}): {exc!r}")
@@ -397,7 +516,12 @@ def main() -> None:
                 log(f"entries disabled ({controls.disabled_reason}) and flat — exiting")
                 break
 
-            ib.sleep(SCAN_INTERVAL_SEC)
+            # Sleep in slices so the kill switch is honoured within ~10s
+            # rather than after a full scan interval.
+            for _ in range(max(1, SCAN_INTERVAL_SEC // 10)):
+                if kill_switch_active():
+                    break
+                ib.sleep(10)
     finally:
         client.disconnect()
         log("disconnected")
