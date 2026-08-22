@@ -75,6 +75,7 @@ from strategy.medik_etf import (
 )
 from strategy.medik_etf_ops import (
     WorkingOrder,
+    verify_account_mode,
     kill_switch_active,
     kill_switch_reason,
     reconcile_startup,
@@ -84,6 +85,7 @@ from strategy.medik_mtf import OHLCV, drop_forming_bar
 NY = ZoneInfo("America/New_York")
 LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
 RISK_ACK_ENV_VAR = "LIVE_RISK_ACK"
+MODE_ENV_VAR = "MEDIK_ETF_MODE"
 PROTECTION_TIMEOUT_SEC = 10
 
 # Holdings this strategy must LEAVE ALONE rather than adopt or refuse over.
@@ -486,6 +488,17 @@ def main() -> None:
         if not accounts or state.net_liquidation <= 0:
             log("PRE-FLIGHT FAILED: account or equity unavailable — exiting")
             return
+
+        # Paper must be PROVEN, not assumed from a port number.
+        mode = os.environ.get(MODE_ENV_VAR, "")
+        mode_ok, mode_msg = verify_account_mode(mode, list(accounts), client.port)
+        log(f"mode: {mode_msg}")
+        if not mode_ok:
+            log(f"PRE-FLIGHT FAILED: set {MODE_ENV_VAR}=paper or {MODE_ENV_VAR}=live "
+                "to match the account you are connected to — exiting")
+            return
+        if mode.strip().lower() == "paper":
+            log("PAPER MODE — orders are simulated; the live gate still applies")
         controls = SessionControls(equity_start_of_session=state.net_liquidation)
         log(f"account {', '.join(accounts)}  session equity baseline "
             f"${state.net_liquidation:,.2f}")

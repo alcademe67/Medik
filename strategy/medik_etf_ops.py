@@ -58,6 +58,40 @@ def kill_switch_reason(path: Path = KILL_SWITCH_PATH) -> str:
 # --------------------------------------------------------- reconciliation
 
 
+def verify_account_mode(mode: str, accounts: list[str], port: int) -> tuple[bool, str]:
+    """Confirm the connected account matches the intended mode.
+
+    The promotion path runs PAPER before LIVE, which is only meaningful if
+    "paper" is verified rather than assumed. Pointing IBKR_PORT at 7497
+    proves nothing on its own -- if TWS is logged into the live account, the
+    paper port still reaches real money.
+
+    IBKR paper account ids start with "D". That prefix is the actual
+    evidence, so it is what gets checked, exactly as autotrade_paper.py does.
+    """
+    mode = (mode or "").strip().lower()
+    if mode not in ("paper", "live"):
+        return False, (f"MEDIK_ETF_MODE must be 'paper' or 'live', got {mode!r} "
+                       "— refusing to guess")
+    if not accounts:
+        return False, "no managed accounts reported by TWS"
+
+    all_paper = all(a.startswith("D") for a in accounts)
+    if mode == "paper":
+        if not all_paper:
+            return False, (f"MODE=paper but accounts {accounts} are NOT paper ids "
+                           "(paper accounts start with 'D') — refusing to trade")
+        if port != 7497:
+            return False, (f"MODE=paper but connected on port {port}; the TWS paper "
+                           "socket is 7497 — refusing to trade")
+        return True, f"paper confirmed: accounts {accounts} on port {port}"
+
+    if all_paper:
+        return False, (f"MODE=live but accounts {accounts} look like paper ids "
+                       "— refusing, this is probably not the account you meant")
+    return True, f"LIVE confirmed: accounts {accounts} on port {port}"
+
+
 @dataclass(frozen=True)
 class WorkingOrder:
     """One live order at the broker, reduced to what reconciliation needs."""

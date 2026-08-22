@@ -182,3 +182,57 @@ def test_two_adoptable_positions_refuse():
 def test_zero_quantity_positions_are_skipped():
     d = reconcile_startup([Position("TQQQ", 0, 0.0)], [], UNIVERSE)
     assert d.action == "START"
+
+
+# ------------------------------------------------------- paper/live guard
+
+
+from strategy.medik_etf_ops import verify_account_mode
+
+
+def test_paper_mode_requires_paper_account_ids():
+    ok, why = verify_account_mode("paper", ["U26953060"], 7497)
+    assert not ok and "NOT paper ids" in why
+
+
+def test_paper_mode_requires_the_paper_port():
+    """A D-account on the live port is still the wrong wiring."""
+    ok, why = verify_account_mode("paper", ["DU123456"], 7496)
+    assert not ok and "7497" in why
+
+
+def test_paper_mode_accepts_a_real_paper_setup():
+    ok, why = verify_account_mode("paper", ["DU123456"], 7497)
+    assert ok and "paper confirmed" in why
+
+
+def test_live_mode_rejects_a_paper_account():
+    ok, why = verify_account_mode("live", ["DU123456"], 7496)
+    assert not ok and "look like paper ids" in why
+
+
+def test_live_mode_accepts_the_real_account():
+    ok, why = verify_account_mode("live", ["U26953060"], 7496)
+    assert ok and "LIVE confirmed" in why
+
+
+@pytest.mark.parametrize("mode", ["", "PAPER_TRADING", "test", "1", None])
+def test_an_unrecognised_mode_is_refused_not_guessed(mode):
+    ok, why = verify_account_mode(mode, ["DU123456"], 7497)
+    assert not ok and "refusing to guess" in why
+
+
+def test_mode_is_case_insensitive():
+    assert verify_account_mode("PAPER", ["DU1"], 7497)[0] is True
+    assert verify_account_mode("Live", ["U1"], 7496)[0] is True
+
+
+def test_no_accounts_is_refused():
+    ok, why = verify_account_mode("live", [], 7496)
+    assert not ok and "no managed accounts" in why
+
+
+def test_a_mixed_account_list_is_not_paper():
+    """One live account among paper ones means it is not a paper session."""
+    ok, _ = verify_account_mode("paper", ["DU1", "U26953060"], 7497)
+    assert not ok
