@@ -8,3 +8,7 @@ logs/
 
 # Cached historical bars — large, regenerable via examples/fetch_etf_intraday.py
 data/etf_intraday/
+
+# Kill switch — must never be committed; a stray one would disable the bot
+# on every machine that checks out the repo.
+STOP_MEDIK
