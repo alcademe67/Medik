@@ -372,13 +372,47 @@ def report(results: list[SymbolResult], equity: float, label: str) -> dict:
 
 
 def main() -> None:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    equity = 290.0
-    if "--equity" in sys.argv:
-        equity = float(sys.argv[sys.argv.index("--equity") + 1])
+    """Parse args strictly.
 
-    symbols = args or ([p.name for p in sorted(DATA_ROOT.iterdir()) if p.is_dir()]
-                       if DATA_ROOT.exists() else [])
+    Both --equity 500 and --equity=500 are accepted, and an unrecognised
+    flag is an ERROR rather than being ignored. The earlier version silently
+    dropped --equity=500 and ran at the default, which would have produced
+    four identical reports from four different commands -- the worst kind of
+    bug in a tool whose whole job is to produce a number you act on.
+    """
+    equity = 290.0
+    symbols: list[str] = []
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg.startswith("--equity"):
+            if "=" in arg:
+                value = arg.split("=", 1)[1]
+            else:
+                if i + 1 >= len(argv):
+                    print("--equity needs a value, e.g. --equity 500")
+                    sys.exit(2)
+                value = argv[i + 1]
+                i += 1
+            try:
+                equity = float(value)
+            except ValueError:
+                print(f"--equity expects a number, got {value!r}")
+                sys.exit(2)
+            if equity <= 0:
+                print(f"--equity must be positive, got {equity}")
+                sys.exit(2)
+        elif arg.startswith("--"):
+            print(f"unknown option {arg!r}. Supported: --equity")
+            sys.exit(2)
+        else:
+            symbols.append(arg)
+        i += 1
+
+    print(f"starting equity: ${equity:,.2f}")
+    symbols = symbols or ([p.name for p in sorted(DATA_ROOT.iterdir()) if p.is_dir()]
+                          if DATA_ROOT.exists() else [])
     if not symbols:
         print(f"No cached data found under {DATA_ROOT}.")
         print("Run examples/fetch_etf_intraday.py on a machine with TWS first.")
