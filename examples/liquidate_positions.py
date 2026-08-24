@@ -10,6 +10,11 @@ It sells the FULL position for each symbol using the quantity and the
 contract TWS reports, so it cannot oversell into a short and cannot resolve
 to the wrong listing. This account is long-only and cannot hold a short.
 
+ONE ACCOUNT AT A TIME. ib.positions() spans every account on the login, so
+--all previously meant "every long position in every account". When the login
+manages more than one account this refuses to run until --account (or
+IBKR_ACCOUNT) names which one, and each sell order is tagged with it.
+
 Pricing: a limit at (bid - buffer), default 1%. That is marketable, so it
 executes at the prevailing bid or better immediately -- the limit is a FLOOR,
 not the sale price -- but unlike a market order it still refuses a
@@ -34,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import belongs_to, resolve_account
 from ibkr.client import IBKRClient
 from ibkr.orders import place_limit_order_on_contract
 
@@ -79,6 +85,9 @@ def main() -> None:
                     help="override the reference price, e.g. --price F=13.90")
     ap.add_argument("--dry-run", action="store_true",
                     help="show everything, place nothing")
+    ap.add_argument("--account", default="",
+                    help="account to sell from; required when the login "
+                         "manages more than one (or set IBKR_ACCOUNT)")
     args = ap.parse_args()
 
     if not args.symbols and not args.all:
@@ -95,11 +104,29 @@ def main() -> None:
 
         # positions arrive asynchronously after connect; ask explicitly and
         # wait, or an immediate call can return an empty list.
+        managed = list(ib.managedAccounts())
+        account, why = resolve_account(managed, explicit=args.account)
+        print(f"      managed accounts: {', '.join(managed) or '(none)'}")
+        print(f"      account: {why}")
+        if not account:
+            print("\nREFUSING TO RUN — selling from the wrong account cannot be "
+                  "undone. Re-run with --account <id>.")
+            return
+
         ib.reqPositions()
         ib.sleep(2)
-        all_pos = [p for p in ib.positions() if p.position > 0]
-        print(f"[2/5] {len(all_pos)} long position(s): "
+        all_pos = [p for p in ib.positions()
+                   if p.position > 0 and belongs_to(p, account)]
+        skipped = [p for p in ib.positions()
+                   if p.position > 0 and not belongs_to(p, account)]
+        print(f"[2/5] {len(all_pos)} long position(s) in {account}: "
               f"{', '.join(f'{p.contract.symbol} {p.position:g}' for p in all_pos) or '(none)'}")
+        if skipped:
+            # Named explicitly: --all reading as "everything you own" is the
+            # mistake this guard exists to prevent, so say what it excluded.
+            print(f"      NOT touching {len(skipped)} position(s) in other "
+                  f"accounts: "
+                  f"{', '.join(f'{p.contract.symbol}@{p.account}' for p in skipped)}")
 
         positions = all_pos
         if not args.all:
@@ -178,7 +205,8 @@ def main() -> None:
         for contract, qty, limit in legs:
             try:
                 trade = place_limit_order_on_contract(
-                    ib, contract, "SELL", qty, limit, confirm=True
+                    ib, contract, "SELL", qty, limit, confirm=True,
+                    account=account,
                 )
                 trades.append(trade)
                 print(f"      placed SELL {qty:g} {contract.symbol} @ {limit}")
@@ -208,7 +236,8 @@ def main() -> None:
         ib.reqPositions()
         ib.sleep(2)
         print("\nPositions now:")
-        remaining = [p for p in ib.positions() if p.position]
+        remaining = [p for p in ib.positions()
+                     if p.position and belongs_to(p, account)]
         for p in remaining:
             print(f"  {p.contract.symbol}: {p.position:g}")
         if not remaining:

@@ -51,6 +51,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ib_async import MarketOrder, Stock
 
+from ibkr.accounts import belongs_to, order_belongs_to
+from ibkr.accounts import resolve_account as _resolve_account
 from ibkr.client import IBKRClient
 from strategy.medik_etf import (
     ETF_UNIVERSE,
@@ -211,30 +213,17 @@ def blocking_orders(ib, account: str = "") -> list:
     return [(t.contract.symbol, t.order.action, t.orderStatus.status)
             for t in ib.openTrades()
             if t.orderStatus.status not in DEAD_ORDER_STATUSES
-            and (not account or getattr(t.order, "account", "") in (account, ""))]
+            and order_belongs_to(t, account)]
 
 
 def resolve_account(managed) -> tuple[str, str]:
     """Pick the one account this run trades. ("", reason) means refuse.
 
-    With more than one managed account under a login, nothing about the
-    connection identifies which one is meant, so it has to be named. Guessing
-    "the first one" would place real orders in whichever account TWS happened
-    to list first.
+    Thin wrapper over ibkr.accounts.resolve_account so this strategy's own
+    variable takes precedence over the repo-wide one, and there is a single
+    implementation of the rule rather than one per script.
     """
-    managed = [a for a in managed if a]
-    wanted = os.environ.get(ACCOUNT_ENV_VAR, "").strip()
-    if not managed:
-        return "", "no managed accounts reported by TWS"
-    if wanted:
-        if wanted not in managed:
-            return "", (f"{ACCOUNT_ENV_VAR}={wanted!r} is not one of the managed "
-                        f"accounts {managed}")
-        return wanted, f"{wanted} (selected by {ACCOUNT_ENV_VAR})"
-    if len(managed) == 1:
-        return managed[0], f"{managed[0]} (the only managed account)"
-    return "", (f"{len(managed)} managed accounts {managed} but {ACCOUNT_ENV_VAR} "
-                "is not set — refusing to guess which one to trade")
+    return _resolve_account(managed, env_vars=(ACCOUNT_ENV_VAR, "IBKR_ACCOUNT"))
 
 
 def subscribe_account(ib, account: str, timeout: float = 5.0) -> bool:
@@ -281,7 +270,7 @@ def read_portfolio(ib, account: str = "") -> PortfolioState:
     whichever caller did not want it.
     """
     def mine(obj) -> bool:
-        return not account or getattr(obj, "account", "") == account
+        return belongs_to(obj, account)
 
     values = {r.tag: r.value for r in ib.accountValues()
               if mine(r) and r.currency in ("USD", "")}
@@ -349,7 +338,7 @@ def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str,
         for trade in ib.openTrades():
             if trade.orderStatus.status in DEAD_ORDER_STATUSES:
                 continue
-            if account and getattr(trade.order, "account", "") not in (account, ""):
+            if not order_belongs_to(trade, account):
                 continue        # another account's order is not ours to cancel
             if armed:
                 ib.cancelOrder(trade.order)
@@ -378,8 +367,7 @@ def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str,
     try:
         ib.sleep(2)
         remaining = [(p.contract.symbol, p.position) for p in ib.positions()
-                     if p.position and (not account
-                                        or getattr(p, "account", "") == account)]
+                     if p.position and belongs_to(p, account)]
         if not remaining:
             log("   IBKR reports FLAT")
             flat = True
@@ -652,7 +640,7 @@ def main() -> None:
                          float(t.order.lmtPrice or t.order.auxPrice or 0))
             for t in ib.openTrades()
             if t.orderStatus.status not in DEAD_ORDER_STATUSES
-            and getattr(t.order, "account", "") in (account, "")
+            and order_belongs_to(t, account)
         ]
         decision = reconcile_startup(list(state.positions), working, ETF_UNIVERSE,
                                      ignore_symbols=IGNORE_SYMBOLS)

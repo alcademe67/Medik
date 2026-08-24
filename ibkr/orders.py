@@ -55,6 +55,7 @@ def place_limit_order_on_contract(
     quantity: float,
     limit_price: float,
     confirm: bool = False,
+    account: str = "",
 ) -> Trade:
     """Limit order against an already-qualified contract.
 
@@ -62,6 +63,11 @@ def place_limit_order_on_contract(
     that already carries a conId — re-qualifying by symbol can resolve to a
     different listing (wrong exchange or currency) than the one actually
     held. Same confirm=True gate as place_limit_order.
+
+    `account` names the account to trade in. On a login managing more than
+    one, an untagged order is not merely ambiguous: TWS may route it to the
+    wrong account or reject it. It is optional so single-account callers are
+    unaffected.
     """
     if action not in VALID_ACTIONS:
         raise ValueError(f"action must be one of {VALID_ACTIONS}")
@@ -76,6 +82,8 @@ def place_limit_order_on_contract(
         )
 
     order = LimitOrder(action, quantity, limit_price)
+    if account:
+        order.account = account
     trade = ib.placeOrder(contract, order)
     ib.sleep(1)
     return trade
