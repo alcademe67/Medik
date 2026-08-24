@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ib_async import Stock
 
 from ibkr.client import IBKRClient
+from ibkr.accounts import resolve_account, tag_map
 from ibkr.orders import place_limit_order_on_contract
 from strategy.config import DEFAULT_CONFIG
 from strategy.core_holdings import CORE_ETFS
@@ -42,12 +43,23 @@ from strategy.risk import RiskRejected, size_core_holding
 NY = ZoneInfo("America/New_York")
 
 
-def _account_value(ib, tag: str) -> float:
-    """Pull a single account tag as a float, USD only."""
-    for row in ib.accountValues():
-        if row.tag == tag and row.currency in ("USD", ""):
-            return float(row.value)
-    raise RuntimeError(f"account value {tag} not reported by TWS")
+def _account_values(ib, account: str) -> dict:
+    """Every USD account tag for ONE account.
+
+    Scanning accountValues() for the first row with a matching tag returns
+    whichever account TWS listed first, which on a multi-account login is
+    not necessarily the one being funded from.
+    """
+    values = tag_map(ib.accountValues(), account)
+    if not values:
+        raise RuntimeError(f"TWS reported no account values for {account}")
+    return values
+
+
+def _need(values: dict, tag: str) -> float:
+    if tag not in values:
+        raise RuntimeError(f"account value {tag} not reported by TWS")
+    return float(values[tag])
 
 
 def _market_is_open(now_ny: datetime) -> bool:
@@ -88,12 +100,24 @@ def main() -> None:
     client = IBKRClient()
     ib = client.connect(retries=5)
     try:
-        accounts = ib.managedAccounts()
+        accounts = list(ib.managedAccounts())
         print(f"Connected on {client.host}:{client.port}. Accounts: {accounts}")
-        if any(a.startswith("D") for a in accounts):
+        account, why = resolve_account(accounts)
+        print(f"Account: {why}")
+        if not account:
+            print("\nREFUSING TO RUN — this buys with real money and the "
+                  "account is ambiguous. Set IBKR_ACCOUNT.")
+            return
+        # Judged on the account being traded, not on the login: with a
+        # paper and a live account both present, "any is paper" would call
+        # a live purchase a paper trade.
+        if account.startswith("D"):
             print("NOTE: PAPER account — this will be a paper trade.")
         else:
             print("*** LIVE ACCOUNT — this spends real money. ***")
+
+        ib.reqAccountUpdates(account)
+        ib.sleep(2)
 
         contract = ib.qualifyContracts(Stock(symbol, "SMART", "USD"))
         if not contract:
@@ -107,9 +131,10 @@ def main() -> None:
 
         limit_price = round(ask * (1 + args.buffer_pct / 100), 2)
 
-        available = _account_value(ib, "AvailableFunds")
-        net_liq = _account_value(ib, "NetLiquidation")
-        gross = _account_value(ib, "GrossPositionValue")
+        values = _account_values(ib, account)
+        available = _need(values, "AvailableFunds")
+        net_liq = _need(values, "NetLiquidation")
+        gross = _need(values, "GrossPositionValue")
 
         plan = size_core_holding(
             symbol=symbol,
@@ -142,7 +167,8 @@ def main() -> None:
             return
 
         trade = place_limit_order_on_contract(
-            ib, contract, "BUY", plan.quantity, limit_price, confirm=True
+            ib, contract, "BUY", plan.quantity, limit_price, confirm=True,
+            account=account,
         )
         ib.sleep(2)
         status = trade.orderStatus

@@ -5,6 +5,8 @@ import time
 
 from ib_async import IB
 
+from ibkr.accounts import belongs_to, tag_map
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7496  # TWS Live Trading socket port
 DEFAULT_CLIENT_ID = 1
@@ -52,11 +54,22 @@ class IBKRClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.disconnect()
 
-    def account_summary(self):
-        return self.ib.accountSummary()
+    def account_summary(self, account: str = ""):
+        """Summary rows, optionally for one account.
 
-    def account_values(self):
-        return self.ib.accountValues()
+        Unfiltered these span every account on the login. Callers that
+        reduce them to {tag: value} must pass an account or use
+        ibkr.accounts.tag_map, or two accounts collapse into whichever
+        row arrived last.
+        """
+        return [r for r in self.ib.accountSummary() if belongs_to(r, account)]
 
-    def positions(self):
-        return self.ib.positions()
+    def account_values(self, account: str = ""):
+        return [r for r in self.ib.accountValues() if belongs_to(r, account)]
+
+    def account_tags(self, account: str = "") -> dict:
+        """{tag: value} for one account — the safe form of the above."""
+        return tag_map(self.ib.accountSummary(), account)
+
+    def positions(self, account: str = ""):
+        return [p for p in self.ib.positions() if belongs_to(p, account)]

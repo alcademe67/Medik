@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import belongs_to, order_belongs_to, require_account
 from ibkr.client import IBKRClient
 from strategy.config import DEFAULT_CONFIG
 
@@ -37,13 +38,23 @@ FALLBACK_STOP_PCT = 0.08
 def main() -> None:
     client = IBKRClient()
     ib = client.connect(retries=5)
-    print(f"Connected. Accounts: {ib.managedAccounts()}")
+    account, managed, why = require_account(ib)
+    print(f"Connected. Managed accounts: {managed}")
+    print(f"Account: {why}")
+    if not account:
+        print("\nREFUSING TO RUN — placing orders in the wrong account cannot "
+              "be undone. Set IBKR_ACCOUNT to the account you mean.")
+        client.disconnect()
+        return
 
     open_sell_symbols = {
-        t.contract.symbol for t in ib.openTrades() if t.order.action == "SELL"
+        t.contract.symbol for t in ib.openTrades()
+        if t.order.action == "SELL" and order_belongs_to(t, account)
     }
 
-    positions = [p for p in ib.positions() if p.position > 0 and p.contract.secType == "STK"]
+    positions = [p for p in ib.positions()
+                 if p.position > 0 and p.contract.secType == "STK"
+                 and belongs_to(p, account)]
     if not positions:
         print("No long stock positions found — nothing to protect.")
         client.disconnect()
@@ -78,6 +89,7 @@ def main() -> None:
         for order in (stop_order, target_order):
             order.ocaGroup = oca_group
             order.ocaType = 1  # cancel remaining orders in group on fill
+            order.account = account
             ib.placeOrder(contract, order)
         ib.sleep(2)
         print(f"  {symbol} protected: stop {stop} / target {target}, linked OCA.")

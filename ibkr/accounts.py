@@ -76,3 +76,54 @@ def order_belongs_to(trade, account: str) -> bool:
     or uncounted when deciding there is nothing outstanding.
     """
     return not account or getattr(trade.order, "account", "") in (account, "")
+
+
+def tag_map(rows, account: str = "") -> dict:
+    """{tag: value} for ONE account, from accountValues() or accountSummary().
+
+    Both return rows keyed by (account, tag, currency), so building the dict
+    without filtering keeps whichever account's row arrived last. Non-USD rows
+    are dropped for the same reason: a tag reported per-currency would
+    otherwise overwrite the base-currency figure.
+    """
+    return {r.tag: r.value for r in rows
+            if belongs_to(r, account) and r.currency in ("USD", "BASE", "")}
+
+
+def positions_for(ib, account: str = "") -> list:
+    """Non-zero positions in ONE account. ib.positions() spans the login."""
+    return [p for p in ib.positions() if p.position and belongs_to(p, account)]
+
+
+def require_account(ib, env_vars: tuple = DEFAULT_ENV_VARS, explicit: str = ""):
+    """(account, managed, reason). Convenience for scripts: resolve or explain.
+
+    Returns the empty string for `account` when the caller must stop; every
+    caller here prints `reason` and exits rather than proceeding on a guess.
+    """
+    managed = list(ib.managedAccounts())
+    account, reason = resolve_account(managed, env_vars=env_vars, explicit=explicit)
+    return account, managed, reason
+
+
+class AccountAmbiguous(RuntimeError):
+    """The login manages several accounts and none was named.
+
+    Raised rather than returned so a script cannot proceed by ignoring it. The
+    failure it prevents is quiet: sizing a trade against a balance that belongs
+    to some other account reads as a working run right up until the order.
+    """
+
+
+def account_context(ib, explicit: str = "", env_vars: tuple = DEFAULT_ENV_VARS):
+    """(account, {tag: value}) for the one account this script should use.
+
+    Resolves the account, then reads accountSummary() scoped to it. Callers
+    that used to walk accountSummary() row by row were taking the LAST match
+    across every account, which with two accounts is whichever TWS sent last.
+    """
+    account, reason = resolve_account(list(ib.managedAccounts()),
+                                      env_vars=env_vars, explicit=explicit)
+    if not account:
+        raise AccountAmbiguous(reason)
+    return account, tag_map(ib.accountSummary(), account)

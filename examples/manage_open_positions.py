@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ib_async import LimitOrder, StopOrder
 
+from ibkr.accounts import belongs_to, order_belongs_to, require_account
 from ibkr.client import IBKRClient
 from ibkr.data import fetch_daily_bars
 from strategy.config import DEFAULT_CONFIG
@@ -43,9 +44,18 @@ from strategy.trade_management import (
 def main() -> None:
     client = IBKRClient()
     ib = client.connect(retries=5)
-    print(f"Connected. Accounts: {ib.managedAccounts()}")
+    account, managed, why = require_account(ib)
+    print(f"Connected. Managed accounts: {managed}")
+    print(f"Account: {why}")
+    if not account:
+        print("\nREFUSING TO RUN — placing orders in the wrong account cannot "
+              "be undone. Set IBKR_ACCOUNT to the account you mean.")
+        client.disconnect()
+        return
 
-    positions = [p for p in ib.positions() if p.position > 0 and p.contract.secType == "STK"]
+    positions = [p for p in ib.positions()
+                 if p.position > 0 and p.contract.secType == "STK"
+                 and belongs_to(p, account)]
     if not positions:
         print("No long stock positions found.")
         client.disconnect()
@@ -55,6 +65,7 @@ def main() -> None:
         t.contract.symbol: t
         for t in ib.openTrades()
         if t.order.action == "SELL" and t.order.orderType == "STP"
+        and order_belongs_to(t, account)
     }
 
     for pos in positions:
@@ -98,6 +109,7 @@ def main() -> None:
             answer = input(f"  Type YES to replace the {symbol} stop: ").strip().upper()
             if answer in ("YES", "Y"):
                 new_order = StopOrder("SELL", qty, round(new_stop, 2), tif="GTC")
+                new_order.account = account
                 ib.placeOrder(pos.contract, new_order)
                 ib.sleep(1)
                 ib.cancelOrder(stop_trade.order)
@@ -116,6 +128,7 @@ def main() -> None:
             answer = input(f"  Type YES to sell {plan.sell_quantity:.4g} {symbol} now: ").strip().upper()
             if answer in ("YES", "Y"):
                 order = LimitOrder("SELL", plan.sell_quantity, round(current_price * 0.999, 2))
+                order.account = account
                 ib.placeOrder(pos.contract, order)
                 ib.sleep(1)
                 print(f"  {symbol} partial-profit sell submitted.")

@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import account_context, positions_for
 from ibkr.client import IBKRClient
 from strategy import journal
 from strategy.config import DEFAULT_CONFIG
@@ -25,15 +26,13 @@ def main() -> None:
     with IBKRClient() as client:
         ib = client.ib
 
-        net_liq = gross_position_value = None
-        for row in ib.accountSummary():
-            if row.tag == "NetLiquidation":
-                net_liq = float(row.value)
-            elif row.tag == "GrossPositionValue":
-                gross_position_value = float(row.value)
-        if net_liq is None:
-            raise RuntimeError("could not read NetLiquidation from TWS")
-        open_position_count = len([p for p in ib.positions() if p.position != 0])
+        account, summary = account_context(ib)
+        print(f"Account: {account}")
+        if "NetLiquidation" not in summary:
+            raise RuntimeError(f"could not read NetLiquidation for {account}")
+        net_liq = float(summary["NetLiquidation"])
+        gross_position_value = float(summary.get("GrossPositionValue", 0) or 0)
+        open_position_count = len(positions_for(ib, account))
 
         now = datetime.now(timezone.utc)
         journal.log_equity_snapshot(net_liq, now.isoformat())

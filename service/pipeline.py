@@ -19,6 +19,9 @@ from datetime import datetime, timezone
 
 from ib_async import IB, Stock
 
+from ibkr.accounts import (
+    order_belongs_to, positions_for, resolve_account, tag_map,
+)
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
 from strategy import journal
@@ -40,30 +43,40 @@ class CycleResult:
     new_orders_queued: list = field(default_factory=list)  # LIVE mode
 
 
-def _read_account_summary(ib: IB) -> dict:
-    out = {}
-    for row in ib.accountSummary():
-        out[row.tag] = row.value
-    return out
+def _read_account_summary(ib: IB, account: str = "") -> dict:
+    """Summary tags for ONE account.
+
+    accountSummary() spans the login, so an unfiltered {tag: value} keeps
+    whichever account's row arrived last -- the pipeline would then size
+    trades against a balance belonging to a different account.
+    """
+    return tag_map(ib.accountSummary(), account)
 
 
-def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
+def run_cycle(ib: IB, mode: str, logger, account: str = "") -> CycleResult:
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
 
-    summary = _read_account_summary(ib)
+    # Resolve before reading anything. On a login with several accounts an
+    # unnamed one is not a default, it is a coin toss about whose balance
+    # the risk engine sizes against.
+    account, why = resolve_account(ib.managedAccounts(), explicit=account)
+    if not account:
+        return CycleResult(ran=False, reason=why)
+
+    summary = _read_account_summary(ib, account)
     if "AvailableFunds" not in summary or "NetLiquidation" not in summary:
         return CycleResult(ran=False, reason="account summary unavailable")
     available_funds = float(summary["AvailableFunds"])
     net_liq = float(summary["NetLiquidation"])
     gross_position_value = float(summary.get("GrossPositionValue", 0) or 0)
 
-    if mode == "PAPER":
-        accounts = ib.managedAccounts()
-        if not accounts or not all(a.startswith("D") for a in accounts):
-            return CycleResult(ran=False, reason=f"PAPER mode but accounts {accounts} aren't paper ids")
+    if mode == "PAPER" and not account.startswith("D"):
+        return CycleResult(
+            ran=False,
+            reason=f"PAPER mode but account {account} is not a paper id")
 
-    open_position_count = len([p for p in ib.positions() if p.position != 0])
+    open_position_count = len(positions_for(ib, account))
 
     journal.log_equity_snapshot(net_liq, now)
     baselines = journal.equity_baselines(now_dt)
@@ -88,8 +101,9 @@ def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
     data = fetch_universe(ib, symbols)
     result = CycleResult(ran=True)
 
-    held = {p.contract.symbol for p in ib.positions() if p.position != 0}
-    pending_symbols = {t.contract.symbol for t in ib.openTrades()}
+    held = {p.contract.symbol for p in positions_for(ib, account)}
+    pending_symbols = {t.contract.symbol for t in ib.openTrades()
+                       if order_belongs_to(t, account)}
 
     for symbol, df in data.items():
         result.candidates_evaluated += 1
@@ -145,9 +159,10 @@ def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
             continue
 
         if mode == "PAPER":
-            accounts = ib.managedAccounts()
-            if not accounts or not all(a.startswith("D") for a in accounts):
-                logger.error(f"REFUSING to place {symbol}: managed accounts {accounts} aren't paper ids")
+            # Re-checked per order, not just once per cycle: the guard has to
+            # hold at the moment of submission, not at the moment of scanning.
+            if not account.startswith("D"):
+                logger.error(f"REFUSING to place {symbol}: account {account} is not a paper id")
                 continue
             contract = Stock(symbol, "SMART", "USD")
             qualified = ib.qualifyContracts(contract)
@@ -161,6 +176,7 @@ def run_cycle(ib: IB, mode: str, logger) -> CycleResult:
             )
             for order in bracket:
                 order.tif = "GTC"
+                order.account = account
                 ib.placeOrder(qualified[0], order)
             ib.sleep(1)
             journal.log_decision(symbol, "paper_order_placed", now, candidate_id,

@@ -51,6 +51,7 @@ _TRUTHY = ("1", "true", "yes", "on")
 class ServiceConfig:
     mode: str
     scan_enabled: bool
+    account: str
     host: str
     port: int
     client_id: int
@@ -78,6 +79,7 @@ def load_config() -> ServiceConfig:
     return ServiceConfig(
         mode=mode,
         scan_enabled=scan_enabled,
+        account=os.environ.get("IBKR_ACCOUNT", "").strip(),
         host=os.environ.get("IBKR_HOST", "127.0.0.1"),
         port=port,
         client_id=int(os.environ.get("IBKR_SERVICE_CLIENT_ID", 77)),

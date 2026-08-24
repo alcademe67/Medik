@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ib_async import Stock
 
+from ibkr.accounts import positions_for, resolve_account, tag_map
 from ibkr.client import IBKRClient
 from strategy.medik_live import (
     DEFAULT_LIMITS,
@@ -155,10 +156,28 @@ def main() -> None:
     client = IBKRClient()
     ib = client.connect(retries=2)
     try:
-        accounts = ib.managedAccounts()
-        values = {r.tag: r.value for r in ib.accountValues() if r.currency in ("USD", "")}
+        accounts = list(ib.managedAccounts())
+        account, why = resolve_account(accounts)
+        print(f"managed accounts: {', '.join(accounts) or '(none)'}")
+        print(f"account: {why}")
+        if not account:
+            print("REFUSING TO RUN — this places live brackets and the "
+                  "account is ambiguous. Set IBKR_ACCOUNT.")
+            return
+
+        # ib_async only subscribes account updates automatically when the
+        # login has exactly one account, so ask explicitly. Without this,
+        # equity reads $0.00 and every size is computed against nothing.
+        ib.reqAccountUpdates(account)
+        ib.sleep(2)
+        values = tag_map(ib.accountValues(), account)
         equity = float(values.get("NetLiquidation", 0) or 0)
-        print(f"account {', '.join(accounts)}   equity ${equity:,.2f}")
+        print(f"equity ${equity:,.2f}")
+        if equity <= 0:
+            print(f"REFUSING TO RUN — no equity reported for {account}. "
+                  "Sizing against $0 would reject every trade or, worse, "
+                  "size one wrongly.")
+            return
 
         can_short, why = resolve_allow_short(DEFAULT_LIMITS, args.account_can_short)
         print(f"shorting: {'ENABLED' if can_short else 'suppressed'} — {why}")
@@ -181,7 +200,7 @@ def main() -> None:
             equity=equity,
             equity_start_of_day=float(values.get("PreviousDayEquityWithLoanValue", equity) or equity),
             equity_start_of_week=equity,   # refine from the journal if you track it
-            open_symbols={p.contract.symbol: 1 for p in ib.positions() if p.position},
+            open_symbols={p.contract.symbol: 1 for p in positions_for(ib, account)},
         )
         print(f"open positions: {sorted(state.open_symbols) or 'none'}\n")
 
@@ -258,6 +277,7 @@ def main() -> None:
             for order in bracket[1:]:
                 order.tif = "GTC"
             for order in bracket:
+                order.account = account
                 ib.placeOrder(contract, order)
             ib.sleep(2)
             register_fill(state, symbol)

@@ -419,6 +419,23 @@ connector, so Claude cannot clear them.
 
 ## Account facts (verified, stable)
 
+- **The login manages TWO accounts (since 2026-08-24): U26953060 (funded,
+  the one that is traded) and U26920266 (empty).** Every ib_async read —
+  `accountValues()`, `accountSummary()`, `portfolio()`, `positions()`,
+  `openTrades()` — spans the WHOLE login and tags each row with its account.
+  Code written when there was one account collapsed that: `{r.tag: r.value}`
+  keeps whichever row arrived last, so the funded account read **$0.00 net
+  liquidation and $0.00 buying power** and the ETF bot sized against nothing.
+  **Set `IBKR_ACCOUNT=U26953060`** (or `MEDIK_ETF_ACCOUNT` for the ETF bot,
+  which takes precedence). The rule lives in `ibkr/accounts.py`: one account
+  → use it; several → it must be NAMED, and scripts refuse to run rather than
+  pick the first. `tests/test_account_scope_repo.py` fails any new script that
+  reads across the login or places an order without `order.account`.
+  Note `ib_async` only auto-subscribes account updates when the login has
+  exactly one account (`connectAsync`: `if not account and len(accounts) == 1`),
+  so multi-account scripts must call `reqAccountUpdates(account)` themselves
+  or `portfolio()` stays empty and positions fall back to cost basis.
+
 - **The owner is in Vancouver, British Columbia — Pacific time**
   (America/Vancouver, PDT/PST). This container runs on **UTC**, so neither
   the owner's clock nor the container's is the market clock. US regular

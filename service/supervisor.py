@@ -34,6 +34,7 @@ from service.alerts import alert_critical
 from service.config import load_config
 from service.logging_setup import setup_logging
 from service.market_hours import market_is_open
+from ibkr.accounts import resolve_account
 from service.pipeline import run_cycle
 
 RECONNECT_ALERT_EVERY_N_FAILURES = 3
@@ -41,13 +42,23 @@ OUTER_RETRY_SLEEP_SECONDS = 60
 MODE_MISMATCH_RECHECK_SECONDS = 1800
 
 
-def _verify_account_matches_mode(ib, mode: str) -> tuple[bool, str]:
-    accounts = ib.managedAccounts()
-    is_paper = bool(accounts) and all(a.startswith("D") for a in accounts)
+def _verify_account_matches_mode(ib, mode: str, account: str = "") -> tuple[bool, str]:
+    """Check the account this service will actually trade, not the login.
+
+    Checking "all accounts are paper" was right when the login had one
+    account. With two it asks the wrong question: a paper account beside a
+    live one makes the whole login look live, and a service pointed at the
+    paper one would be refused for a reason that does not apply to it.
+    """
+    managed = ib.managedAccounts()
+    account, why = resolve_account(managed, explicit=account)
+    if not account:
+        return False, why
+    is_paper = account.startswith("D")
     if mode == "PAPER" and not is_paper:
-        return False, f"MODE=PAPER but connected accounts {accounts} are not paper ids"
+        return False, f"MODE=PAPER but account {account} is not a paper id"
     if mode == "LIVE" and is_paper:
-        return False, f"MODE=LIVE but connected accounts {accounts} look like paper ids"
+        return False, f"MODE=LIVE but account {account} looks like a paper id"
     return True, ""
 
 
@@ -92,9 +103,10 @@ def main() -> None:
             continue
 
         consecutive_connect_failures = 0
-        logger.info(f"connected. managed accounts: {ib.managedAccounts()}")
+        logger.info(f"connected. managed accounts: {ib.managedAccounts()}; "
+                    f"trading account: {config.account or '(sole account)'}")
 
-        ok, reason = _verify_account_matches_mode(ib, config.mode)
+        ok, reason = _verify_account_matches_mode(ib, config.mode, config.account)
         if not ok:
             alert_critical(config.log_dir, logger, "Account/mode mismatch -- service paused", reason)
             client.disconnect()
@@ -109,7 +121,7 @@ def main() -> None:
             if cycle_count == 1 or cycle_count % config.health_check_every_n_cycles == 0:
                 checks = [
                     ("connectivity", health.check_connectivity(ib)),
-                    ("account", health.check_account_health(ib)),
+                    ("account", health.check_account_health(ib, config.account)),
                     ("market_data", health.check_market_data_health(ib)),
                 ]
                 failed = [(name, msg) for name, (ok, msg) in checks if not ok]
@@ -136,7 +148,7 @@ def main() -> None:
                     logger.info("market closed -- idling until next session")
             else:
                 try:
-                    result = run_cycle(ib, config.mode, logger)
+                    result = run_cycle(ib, config.mode, logger, config.account)
                     if not result.ran:
                         logger.info(f"cycle skipped: {result.reason}")
                     else:

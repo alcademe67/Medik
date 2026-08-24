@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import order_belongs_to, resolve_account
 from ibkr.client import IBKRClient
 from ibkr.orders import cancel_order
 
@@ -44,14 +45,27 @@ def main() -> None:
     ap.add_argument("--id", type=int, action="append", default=[],
                     help="order id to cancel (repeatable)")
     ap.add_argument("--all", action="store_true", help="cancel every working order")
+    ap.add_argument("--account", default="",
+                    help="account to cancel in; required when the login "
+                         "manages more than one (or set IBKR_ACCOUNT)")
     args = ap.parse_args()
 
     with IBKRClient() as client:
         ib = client.ib
         print(f"Connected to TWS at {client.host}:{client.port}\n")
 
-        trades = [t for t in ib.openTrades() if t.orderStatus.status not in
-                  ("Filled", "Cancelled", "ApiCancelled", "Inactive")]
+        account, why = resolve_account(list(ib.managedAccounts()),
+                                       explicit=args.account)
+        print(f"Account: {why}")
+        if not account:
+            print("\nREFUSING TO RUN — --all would reach into another "
+                  "account's orders. Re-run with --account <id>.")
+            return
+
+        trades = [t for t in ib.openTrades()
+                  if t.orderStatus.status not in
+                  ("Filled", "Cancelled", "ApiCancelled", "Inactive")
+                  and order_belongs_to(t, account)]
 
         if not trades:
             print("No working orders. Nothing to cancel.")

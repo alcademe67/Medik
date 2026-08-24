@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import account_context, positions_for
 from ibkr.client import IBKRClient
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
@@ -35,19 +36,15 @@ def main() -> None:
     with IBKRClient() as client:
         ib = client.ib
 
-        available_funds = net_liq = gross_position_value = None
-        for row in ib.accountSummary():
-            if row.tag == "AvailableFunds":
-                available_funds = float(row.value)
-            elif row.tag == "NetLiquidation":
-                net_liq = float(row.value)
-            elif row.tag == "GrossPositionValue":
-                gross_position_value = float(row.value)
-        if available_funds is None or net_liq is None:
-            raise RuntimeError("could not read account summary from TWS")
-        open_position_count = len([p for p in ib.positions() if p.position != 0])
-        print(f"Available funds: {available_funds:.2f}  Net liq: {net_liq:.2f}  "
-              f"Open positions: {open_position_count}")
+        account, summary = account_context(ib)
+        if "AvailableFunds" not in summary or "NetLiquidation" not in summary:
+            raise RuntimeError(f"could not read account summary for {account}")
+        available_funds = float(summary["AvailableFunds"])
+        net_liq = float(summary["NetLiquidation"])
+        gross_position_value = float(summary.get("GrossPositionValue", 0) or 0)
+        open_position_count = len(positions_for(ib, account))
+        print(f"Account: {account}  Available funds: {available_funds:.2f}  "
+              f"Net liq: {net_liq:.2f}  Open positions: {open_position_count}")
 
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()

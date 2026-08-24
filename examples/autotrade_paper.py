@@ -29,6 +29,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import (
+    order_belongs_to, positions_for, resolve_account, tag_map,
+)
 from ibkr.client import IBKRClient
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
@@ -50,35 +53,46 @@ def log_event(event: dict) -> None:
     print(event)
 
 
-def assert_paper_account(ib: IB) -> None:
-    accounts = ib.managedAccounts()
-    if not accounts or not all(a.startswith("D") for a in accounts):
+def assert_paper_account(ib: IB) -> str:
+    """Resolve the account to trade and prove it is a paper account.
+
+    "every account on the login is paper" was the right question when the
+    login had one account. With several it is both too weak and too strong:
+    too strong because one live account beside a paper one blocks a
+    perfectly good paper run, and too weak because it never establishes
+    WHICH account the orders would go to. Resolve one, then check that one.
+    """
+    accounts = list(ib.managedAccounts())
+    account, why = resolve_account(accounts)
+    if not account:
+        ib.disconnect()
+        raise SystemExit(f"REFUSING TO RUN: {why}")
+    if not account.startswith("D"):
         ib.disconnect()
         raise SystemExit(
-            f"REFUSING TO RUN: managed accounts {accounts} are not all paper "
-            "accounts (paper ids start with 'D'). This script never trades live."
+            f"REFUSING TO RUN: account {account} is not a paper account "
+            "(paper ids start with 'D'). This script never trades live."
         )
+    print(f"paper account confirmed: {why}")
+    return account
 
 
 def main() -> None:
     client = IBKRClient(host="127.0.0.1", port=PAPER_PORT, client_id=42)
     ib = client.connect(retries=5)
-    assert_paper_account(ib)
+    account = assert_paper_account(ib)
 
-    available_funds = net_liq = gross_pos = None
-    for row in ib.accountSummary():
-        if row.tag == "AvailableFunds":
-            available_funds = float(row.value)
-        elif row.tag == "NetLiquidation":
-            net_liq = float(row.value)
-        elif row.tag == "GrossPositionValue":
-            gross_pos = float(row.value)
-    if available_funds is None or net_liq is None:
-        raise SystemExit("could not read account summary values")
-    headroom = portfolio_headroom(net_liq, gross_pos or 0.0, DEFAULT_CONFIG)
+    summary = tag_map(ib.accountSummary(), account)
+    if "AvailableFunds" not in summary or "NetLiquidation" not in summary:
+        raise SystemExit(f"could not read account summary values for {account}")
+    available_funds = float(summary["AvailableFunds"])
+    net_liq = float(summary["NetLiquidation"])
+    gross_pos = float(summary.get("GrossPositionValue", 0) or 0)
+    headroom = portfolio_headroom(net_liq, gross_pos, DEFAULT_CONFIG)
 
-    held = {p.contract.symbol for p in ib.positions() if p.position != 0}
-    pending = {t.contract.symbol for t in ib.openTrades()}
+    held = {p.contract.symbol for p in positions_for(ib, account)}
+    pending = {t.contract.symbol for t in ib.openTrades()
+               if order_belongs_to(t, account)}
     log_event({"event": "start", "available_funds": available_funds,
                "held": sorted(held), "pending": sorted(pending)})
 
@@ -124,6 +138,7 @@ def main() -> None:
         )
         for order in bracket:
             order.tif = "GTC"
+            order.account = account
             ib.placeOrder(contract, order)
         ib.sleep(1)
         entered += 1

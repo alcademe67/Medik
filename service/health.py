@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from ib_async import IB, Stock
 
+from ibkr.accounts import tag_map
+
 
 def check_connectivity(ib: IB) -> tuple[bool, str]:
     if not ib.isConnected():
@@ -12,14 +14,22 @@ def check_connectivity(ib: IB) -> tuple[bool, str]:
     return True, "connected"
 
 
-def check_account_health(ib: IB) -> tuple[bool, str]:
+def check_account_health(ib: IB, account: str = "") -> tuple[bool, str]:
+    """Health of ONE account.
+
+    accountSummary() reports every account on the login, so an unfiltered
+    {tag: value} keeps whichever row arrived last. With a second, empty
+    account present that reads as NetLiquidation 0 and the service would
+    report the funded account as failing.
+    """
     try:
-        summary = {row.tag: row.value for row in ib.accountSummary()}
+        summary = tag_map(ib.accountSummary(), account)
     except Exception as exc:
         return False, f"accountSummary() failed: {exc}"
 
     if "NetLiquidation" not in summary:
-        return False, "account summary missing NetLiquidation"
+        return False, ("account summary missing NetLiquidation"
+                       + (f" for {account}" if account else ""))
     net_liq = float(summary["NetLiquidation"])
     if net_liq <= 0:
         return False, f"NetLiquidation is non-positive: {net_liq}"

@@ -23,16 +23,23 @@ def main() -> None:
     with IBKRClient() as client:
         print(f"Connected to TWS at {client.host}:{client.port}")
 
+        # Every row is labelled with its account. On a login that manages
+        # more than one, an unlabelled dump reads as a single account's
+        # figures when it is really two interleaved.
+        accounts = list(client.ib.managedAccounts())
+        print(f"\nManaged accounts: {', '.join(accounts) or '(none)'}")
+
         print("\nAccount summary:")
         for row in client.account_summary():
-            print(f"  {row.tag}: {row.value} {row.currency}")
+            print(f"  [{row.account}] {row.tag}: {row.value} {row.currency}")
 
         print("\nPositions:")
         positions = client.positions()
         if not positions:
             print("  (none)")
         for pos in positions:
-            print(f"  {pos.contract.symbol}: {pos.position} @ avg cost {pos.avgCost}")
+            print(f"  [{pos.account}] {pos.contract.symbol}: {pos.position} "
+                  f"@ avg cost {pos.avgCost}")
 
 
 if __name__ == "__main__":

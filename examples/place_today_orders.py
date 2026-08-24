@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import order_belongs_to, resolve_account, tag_map
 from ibkr.client import IBKRClient
 from strategy.config import DEFAULT_CONFIG
 from strategy.risk import portfolio_headroom
@@ -40,23 +41,25 @@ CANDIDATES = [
 def main() -> None:
     client = IBKRClient()  # 127.0.0.1:7496 unless .env overrides
     ib = client.connect(retries=5)
-    accounts = ib.managedAccounts()
+    accounts = list(ib.managedAccounts())
     print(f"Connected to TWS. Accounts: {accounts}")
-    if any(a.startswith("D") for a in accounts):
+    account, why = resolve_account(accounts)
+    print(f"Account: {why}")
+    if not account:
+        raise SystemExit("REFUSING TO RUN — these orders spend real money and "
+                         "the account is ambiguous. Set IBKR_ACCOUNT.")
+    # Judged on the account being traded, not on the login.
+    if account.startswith("D"):
         print("NOTE: this looks like a PAPER account — orders will be paper trades.")
     else:
         print("*** LIVE ACCOUNT — these orders use real money. ***")
 
-    available = net_liq = gross = None
-    for row in ib.accountSummary():
-        if row.tag == "AvailableFunds":
-            available = float(row.value)
-        elif row.tag == "NetLiquidation":
-            net_liq = float(row.value)
-        elif row.tag == "GrossPositionValue":
-            gross = float(row.value)
-    if available is None or net_liq is None:
-        raise SystemExit("could not read account summary")
+    summary = tag_map(ib.accountSummary(), account)
+    if "AvailableFunds" not in summary or "NetLiquidation" not in summary:
+        raise SystemExit(f"could not read account summary for {account}")
+    available = float(summary["AvailableFunds"])
+    net_liq = float(summary["NetLiquidation"])
+    gross = float(summary.get("GrossPositionValue", 0) or 0)
 
     per_trade_cap = available * DEFAULT_CONFIG.max_position_pct
     headroom = portfolio_headroom(net_liq, gross or 0.0, DEFAULT_CONFIG)
@@ -99,6 +102,7 @@ def main() -> None:
         bracket.stopLoss.tif = "GTC"
         try:
             for order in bracket:
+                order.account = account
                 ib.placeOrder(contract, order)
             ib.sleep(2)
             print(f"  {symbol} bracket placed. Parent status: {bracket.parent.orderId}\n")
@@ -107,7 +111,9 @@ def main() -> None:
             print(f"  {symbol} bracket failed ({exc}); trying plain limit entry...")
             from ib_async import LimitOrder
 
-            trade = ib.placeOrder(contract, LimitOrder("BUY", qty, entry))
+            fallback = LimitOrder("BUY", qty, entry)
+            fallback.account = account
+            trade = ib.placeOrder(contract, fallback)
             ib.sleep(2)
             print(f"  {symbol} plain limit placed (status {trade.orderStatus.status}). "
                   f"NO automatic stop — set stop {stop} manually in TWS.\n")
@@ -115,6 +121,8 @@ def main() -> None:
 
     print("Done. Open orders now:")
     for t in ib.openTrades():
+        if not order_belongs_to(t, account):
+            continue
         print(f"  {t.contract.symbol}: {t.order.action} {t.order.totalQuantity} "
               f"{t.order.orderType} @ {getattr(t.order, 'lmtPrice', '')} [{t.orderStatus.status}]")
     client.disconnect()

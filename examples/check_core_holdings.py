@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import account_context, positions_for
 from ibkr.client import IBKRClient
 from strategy.config import DEFAULT_CONFIG
 from strategy.core_holdings import is_core_etf
@@ -37,21 +38,15 @@ def main() -> None:
     with IBKRClient() as client:
         ib = client.ib
 
-        net_liq = available_funds = gross_position_value = None
-        for row in ib.accountSummary():
-            if row.tag == "NetLiquidation":
-                net_liq = float(row.value)
-            elif row.tag == "AvailableFunds":
-                available_funds = float(row.value)
-            elif row.tag == "GrossPositionValue":
-                gross_position_value = float(row.value)
+        account, summary = account_context(ib)
+        print(f"Account: {account}")
+        if "NetLiquidation" not in summary:
+            raise RuntimeError(f"could not read NetLiquidation for {account}")
+        net_liq = float(summary["NetLiquidation"])
+        available_funds = float(summary.get("AvailableFunds", 0) or 0)
+        gross_position_value = float(summary.get("GrossPositionValue", 0) or 0)
 
-        if net_liq is None:
-            raise RuntimeError("could not read NetLiquidation from TWS")
-        available_funds = available_funds or 0.0
-        gross_position_value = gross_position_value or 0.0
-
-        positions = [p for p in ib.positions() if p.position != 0]
+        positions = positions_for(ib, account)
 
     core, other = [], []
     for p in positions:

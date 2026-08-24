@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ibkr.accounts import AccountAmbiguous, account_context
 from ibkr.client import IBKRClient
 from ibkr.data import fetch_universe
 from ibkr.scanner import scan_universe
@@ -31,13 +32,18 @@ def main() -> None:
             symbols = ["MARA", "NFLX", "PLUG"]
         print(f"Backtesting {len(symbols)} symbols: {symbols}")
 
-        available_funds = 0.0
-        for row in ib.accountSummary():
-            if row.tag == "AvailableFunds":
-                available_funds = float(row.value)
-                break
+        # A backtest only needs a plausible starting capital, so an
+        # unresolvable account falls back to the default rather than
+        # stopping. Nothing here can place an order.
+        try:
+            account, summary = account_context(ib)
+            available_funds = float(summary.get("AvailableFunds", 0) or 0)
+        except AccountAmbiguous as exc:
+            print(f"Account not resolved ({exc}); using the default capital.")
+            account, available_funds = "", 0.0
         capital = available_funds if available_funds > 0 else 10_000.0
-        print(f"Starting capital: {capital:.2f}")
+        print(f"Starting capital: {capital:.2f}"
+              + (f" (from {account})" if account and available_funds > 0 else ""))
 
         data = fetch_universe(ib, symbols)
         result = run_backtest(data, starting_capital=capital, config=DEFAULT_CONFIG)
