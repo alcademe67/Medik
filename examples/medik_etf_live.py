@@ -86,6 +86,7 @@ NY = ZoneInfo("America/New_York")
 LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
 RISK_ACK_ENV_VAR = "LIVE_RISK_ACK"
 MODE_ENV_VAR = "MEDIK_ETF_MODE"
+ACCOUNT_ENV_VAR = "MEDIK_ETF_ACCOUNT"
 PROTECTION_TIMEOUT_SEC = 10
 
 # Holdings this strategy must LEAVE ALONE rather than adopt or refuse over.
@@ -191,21 +192,120 @@ def build_snapshot(ib, symbol: str, market_is_open: bool) -> ETFSnapshot | None:
     ), contract
 
 
-def read_portfolio(ib) -> PortfolioState:
-    values = {r.tag: r.value for r in ib.accountValues() if r.currency in ("USD", "")}
+# Statuses IBKR reports for an order that will never work again. "Inactive"
+# is deliberately NOT here: IBKR also uses it for an order that is accepted
+# but not yet working (an RTH order sent pre-open activates at the bell), so
+# counting it as dead could let a second entry go out alongside a live one.
+# Miscounting UP only stops trading; miscounting DOWN can double-position.
+DEAD_ORDER_STATUSES = ("Filled", "Cancelled", "ApiCancelled")
+
+
+def blocking_orders(ib, account: str = "") -> list:
+    """Working orders that will veto a new entry, as (symbol, action, status).
+
+    An order whose account IBKR left blank is counted as blocking. Blank is
+    ambiguous, and the two ways of being wrong are not symmetric: over-counting
+    only stops the bot trading, while under-counting can put a second entry out
+    beside a live one.
+    """
+    return [(t.contract.symbol, t.order.action, t.orderStatus.status)
+            for t in ib.openTrades()
+            if t.orderStatus.status not in DEAD_ORDER_STATUSES
+            and (not account or getattr(t.order, "account", "") in (account, ""))]
+
+
+def resolve_account(managed) -> tuple[str, str]:
+    """Pick the one account this run trades. ("", reason) means refuse.
+
+    With more than one managed account under a login, nothing about the
+    connection identifies which one is meant, so it has to be named. Guessing
+    "the first one" would place real orders in whichever account TWS happened
+    to list first.
+    """
+    managed = [a for a in managed if a]
+    wanted = os.environ.get(ACCOUNT_ENV_VAR, "").strip()
+    if not managed:
+        return "", "no managed accounts reported by TWS"
+    if wanted:
+        if wanted not in managed:
+            return "", (f"{ACCOUNT_ENV_VAR}={wanted!r} is not one of the managed "
+                        f"accounts {managed}")
+        return wanted, f"{wanted} (selected by {ACCOUNT_ENV_VAR})"
+    if len(managed) == 1:
+        return managed[0], f"{managed[0]} (the only managed account)"
+    return "", (f"{len(managed)} managed accounts {managed} but {ACCOUNT_ENV_VAR} "
+                "is not set — refusing to guess which one to trade")
+
+
+def subscribe_account(ib, account: str, timeout: float = 5.0) -> bool:
+    """Explicitly subscribe to account updates, and confirm they arrived.
+
+    THIS IS THE $0.00 BUG. reqAccountUpdates handles one account at a time, so
+    ib_async only auto-subscribes when the login has exactly one managed
+    account. With two, nothing is subscribed, accountValues() stays EMPTY, and
+    every tag reads 0 — which presents as an empty account rather than as a
+    missing subscription, so the bot sized against $0 buying power instead of
+    reporting that it could not see the account at all.
+
+    Returns False rather than raising: the caller turns that into a preflight
+    FAIL, so a silent zero can never reach the risk engine.
+    """
+    if not account:
+        return False
+    ib.reqAccountUpdates(account)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if any(v.account == account and v.tag == "NetLiquidation" and v.value
+               for v in ib.accountValues()):
+            return True
+        ib.sleep(0.25)
+    return False
+
+
+def read_portfolio(ib, account: str = "") -> PortfolioState:
+    """Broker state for the risk engine, scoped to ONE account.
+
+    Every read here is filtered on `account` in Python rather than by passing
+    it to ib_async, so the scoping holds regardless of which of these calls the
+    installed version accepts an account argument for. Filtering on the
+    `.account` field each object already carries cannot silently stop working.
+
+    Without that filter the tag dict is keyed by name alone, so two accounts
+    collapse into whichever row arrived last — the bot would size against a
+    balance belonging to a different account and never say so.
+
+    market_value is the LIVE value and avg_cost is the per-share basis. They
+    are separate fields because they answer different questions: exposure caps
+    must measure what a position is worth NOW, while a restart needs the basis
+    to rebuild the entry price. Deriving either from the other was wrong for
+    whichever caller did not want it.
+    """
+    def mine(obj) -> bool:
+        return not account or getattr(obj, "account", "") == account
+
+    values = {r.tag: r.value for r in ib.accountValues()
+              if mine(r) and r.currency in ("USD", "")}
+
     positions = tuple(
-        Position(p.contract.symbol, p.position, p.position * p.averageCost)
-        for p in ib.portfolio() if p.position
-    ) or tuple(
-        Position(p.contract.symbol, p.position, p.position * p.avgCost)
-        for p in ib.positions() if p.position
+        Position(p.contract.symbol, p.position, float(p.marketValue),
+                 float(p.averageCost))
+        for p in ib.portfolio() if p.position and mine(p)
     )
+    if not positions:
+        # portfolio() is fed by the account-update subscription and is empty
+        # until the first update lands; positions() is a direct query. It
+        # carries no market value, so basis stands in.
+        positions = tuple(
+            Position(p.contract.symbol, p.position, p.position * float(p.avgCost),
+                     float(p.avgCost))
+            for p in ib.positions() if p.position and mine(p)
+        )
+
     return PortfolioState(
         net_liquidation=float(values.get("NetLiquidation", 0) or 0),
         available_cash=float(values.get("AvailableFunds", 0) or 0),
         positions=positions,
-        open_order_count=len([t for t in ib.openTrades()
-                              if t.orderStatus.status not in ("Filled", "Cancelled")]),
+        open_order_count=len(blocking_orders(ib, account)),
     )
 
 
@@ -225,7 +325,8 @@ def verify_protection(ib, trade_legs) -> tuple[bool, str]:
     return True, ""
 
 
-def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str) -> bool:
+def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str,
+                       account: str = "") -> bool:
     """STOP_MEDIK sequence, in this exact order:
 
         disable entries -> cancel working orders -> flatten -> confirm flat
@@ -246,8 +347,10 @@ def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str) -> b
         ib.reqAllOpenOrders()
         ib.sleep(1)
         for trade in ib.openTrades():
-            if trade.orderStatus.status in ("Filled", "Cancelled", "ApiCancelled"):
+            if trade.orderStatus.status in DEAD_ORDER_STATUSES:
                 continue
+            if account and getattr(trade.order, "account", "") not in (account, ""):
+                continue        # another account's order is not ours to cancel
             if armed:
                 ib.cancelOrder(trade.order)
             cancelled += 1
@@ -268,12 +371,15 @@ def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str) -> b
     elif not armed:
         log("   not armed — would flatten, sending nothing")
     else:
-        flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity, "STOP_MEDIK")
+        flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity,
+                "STOP_MEDIK", account)
 
     log("4. confirming flat")
     try:
         ib.sleep(2)
-        remaining = [(p.contract.symbol, p.position) for p in ib.positions() if p.position]
+        remaining = [(p.contract.symbol, p.position) for p in ib.positions()
+                     if p.position and (not account
+                                        or getattr(p, "account", "") == account)]
         if not remaining:
             log("   IBKR reports FLAT")
             flat = True
@@ -289,18 +395,21 @@ def emergency_shutdown(ib, armed: bool, open_trade, contracts, reason: str) -> b
     return flat
 
 
-def flatten(ib, contract, quantity: int, reason: str) -> None:
+def flatten(ib, contract, quantity: int, reason: str, account: str = "") -> None:
     """Emergency exit: close an unprotected position with a marketable order."""
     log(f"  EMERGENCY FLATTEN {contract.symbol} x{quantity} — {reason}")
     order = MarketOrder("SELL", quantity)
     order.tif = "DAY"
+    if account:
+        order.account = account
     ib.placeOrder(contract, order)
     ib.sleep(5)
     log(f"  flatten status: {order.orderId} -> "
         f"{ib.trades()[-1].orderStatus.status if ib.trades() else 'unknown'}")
 
 
-def place_bracket(ib, contract, sized, controls: SessionControls) -> bool:
+def place_bracket(ib, contract, sized, controls: SessionControls,
+                  account: str = "") -> bool:
     """Submit entry+stop+target, verify all three, or flatten. Returns success."""
     bracket = ib.bracketOrder(
         "BUY", sized.quantity,
@@ -313,6 +422,12 @@ def place_bracket(ib, contract, sized, controls: SessionControls) -> bool:
     bracket[0].tif = "DAY"
     for leg in bracket[1:]:
         leg.tif = "GTC"
+    # With more than one account on the login, an untagged order is not
+    # merely ambiguous — TWS may route it to the wrong account or reject
+    # it. Name the account on every leg.
+    if account:
+        for leg in bracket:
+            leg.account = account
 
     legs = [ib.placeOrder(contract, o) for o in bracket]
     log(f"  submitted: parent={bracket[0].orderId} "
@@ -329,7 +444,7 @@ def place_bracket(ib, contract, sized, controls: SessionControls) -> bool:
 
     log(f"  BRACKET FAILURE: {why}")
     if parent_filled > 0:
-        flatten(ib, contract, int(parent_filled), why)
+        flatten(ib, contract, int(parent_filled), why, account)
     else:
         for o in bracket:
             ib.cancelOrder(o)
@@ -343,7 +458,8 @@ def place_bracket(ib, contract, sized, controls: SessionControls) -> bool:
 
 def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
               open_trade: OpenTrade | None,
-              contract_sink: dict | None = None) -> OpenTrade | None:
+              contract_sink: dict | None = None,
+              account: str = "") -> OpenTrade | None:
     """One scan cycle. Returns the open trade after this cycle, or None.
 
     Order of business: read account -> manage any open position -> if flat,
@@ -355,7 +471,7 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
     now_min = _now_minutes(now)
     now_ts = time.time()
 
-    state = read_portfolio(ib)
+    state = read_portfolio(ib, account)
     if state.net_liquidation <= 0:
         log("account data unavailable this cycle — NO ORDER")
         return open_trade
@@ -399,14 +515,16 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
         if exiting:
             log(f"EXIT {open_trade.symbol}: {why}")
             if armed:
-                flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity, why)
+                flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity,
+                        why, account)
                 controls.trades_completed += 1
             return None
         if ranked:
             rotate, rwhy = should_rotate(open_trade, current, ranked[0], price)
             log(f"rotation: {'YES — ' + rwhy if rotate else 'no — ' + rwhy}")
             if rotate and armed:
-                flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity, rwhy)
+                flatten(ib, contracts.get(open_trade.symbol), open_trade.quantity,
+                        rwhy, account)
                 controls.trades_completed += 1
                 return None
         log(f"holding {open_trade.symbol} x{open_trade.quantity} "
@@ -447,7 +565,7 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
 
     # Authorised by the checklist alone. No interactive confirmation.
     ledger.mark_pending(sized.symbol)
-    ok = place_bracket(ib, contracts[sized.symbol], sized, controls)
+    ok = place_bracket(ib, contracts[sized.symbol], sized, controls, account)
     if not ok:
         ledger.mark_failed(sized.symbol)
         log(f"ENTRIES DISABLED: {controls.disabled_reason}")
@@ -475,20 +593,34 @@ def main() -> None:
 
     try:
         accounts = ib.managedAccounts()
-        state = read_portfolio(ib)
-        log(f"ACCOUNT: {', '.join(accounts) if accounts else 'UNAVAILABLE'}")
+        account, account_msg = resolve_account(accounts)
+        log(f"MANAGED ACCOUNTS: {', '.join(accounts) if accounts else 'UNAVAILABLE'}")
+        log(f"ACCOUNT: {account_msg}")
+
+        # Subscribing is what makes accountValues() non-empty on a login with
+        # more than one account. Do it BEFORE the first read, and report the
+        # outcome, so an unsubscribed account can never be read as $0.00.
+        subscribed = subscribe_account(ib, account) if account else False
+        state = read_portfolio(ib, account)
         log(f"NET LIQUIDATION: ${state.net_liquidation:,.2f}")
         log(f"AVAILABLE FUNDS: ${state.available_cash:,.2f}")
 
         # Preflight is a single explicit verdict, so a failed start can never
         # be mistaken for a quiet one.
         mode = os.environ.get(MODE_ENV_VAR, "")
-        mode_ok, mode_msg = verify_account_mode(mode, list(accounts), client.port)
+        mode_ok, mode_msg = verify_account_mode(mode, [account] if account else [],
+                                               client.port)
         failures = []
         if not ib.isConnected():
             failures.append("not connected to IBKR")
         if not accounts:
             failures.append("no managed accounts")
+        if not account:
+            failures.append(account_msg)
+        elif not subscribed:
+            failures.append(
+                f"no account update for {account} within the timeout — balances "
+                "would read $0.00; refusing to trade against unknown equity")
         if state.net_liquidation <= 0:
             failures.append("net liquidation unavailable or zero")
         if not mode_ok:
@@ -499,8 +631,8 @@ def main() -> None:
         if failures:
             for f in failures:
                 log(f"  FAIL | {f}")
-            log(f"  set {MODE_ENV_VAR}=paper or {MODE_ENV_VAR}=live to match the "
-                "account you are connected to")
+            log(f"  set {ACCOUNT_ENV_VAR}=<account id> to choose the account, and "
+                f"{MODE_ENV_VAR}=paper or {MODE_ENV_VAR}=live to match it")
             log("EXITING — no scan, no orders")
             return
         if mode.strip().lower() == "paper":
@@ -519,7 +651,8 @@ def main() -> None:
                          float(t.order.totalQuantity or 0),
                          float(t.order.lmtPrice or t.order.auxPrice or 0))
             for t in ib.openTrades()
-            if t.orderStatus.status not in ("Filled", "Cancelled", "ApiCancelled")
+            if t.orderStatus.status not in DEAD_ORDER_STATUSES
+            and getattr(t.order, "account", "") in (account, "")
         ]
         decision = reconcile_startup(list(state.positions), working, ETF_UNIVERSE,
                                      ignore_symbols=IGNORE_SYMBOLS)
@@ -562,7 +695,7 @@ def main() -> None:
             if kill_switch_active():
                 controls.disable("STOP_MEDIK")
                 emergency_shutdown(ib, armed, open_trade, last_contracts,
-                                   kill_switch_reason())
+                                   kill_switch_reason(), account)
                 break
 
             if not _market_open(now):
@@ -576,7 +709,7 @@ def main() -> None:
             log(f"scan @ {now:%H:%M:%S} ET")
             try:
                 open_trade = scan_once(ib, armed, controls, ledger, open_trade,
-                                       last_contracts)
+                                       last_contracts, account)
             except Exception as exc:  # one bad cycle must not kill the run
                 controls.execution_errors += 1
                 log(f"CYCLE ERROR ({controls.execution_errors}): {exc!r}")

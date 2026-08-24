@@ -147,7 +147,11 @@ def adopt_open_position(
             f"{position.symbol}: stop present but no take-profit — protected "
             "against loss, cannot manage the exit")
 
-    entry = (position.market_value / position.quantity) if position.quantity else 0.0
+    # Basis first: market_value is the CURRENT value, so dividing it by the
+    # share count gives today's price, not the price this position was opened
+    # at — which would silently reset every R-multiple on a restart.
+    entry = position.avg_cost or (
+        position.market_value / position.quantity if position.quantity else 0.0)
     stop = max(o.price for o in stops)        # tightest stop wins
     target = min(o.price for o in targets)    # nearest target wins
 

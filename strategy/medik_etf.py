@@ -386,9 +386,17 @@ def rank_candidates(scores: Sequence[CandidateScore]) -> list[CandidateScore]:
 
 @dataclass(frozen=True)
 class Position:
+    """One holding as the broker reports it.
+
+    market_value is what the position is worth NOW; avg_cost is the per-share
+    basis. Exposure caps need the former, a restart rebuilding an entry price
+    needs the latter, and deriving either from the other is wrong for one of
+    them. avg_cost defaults to 0 for callers that genuinely have no basis.
+    """
     symbol: str
     quantity: float
     market_value: float
+    avg_cost: float = 0.0
 
 
 @dataclass(frozen=True)
