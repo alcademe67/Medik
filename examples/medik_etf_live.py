@@ -91,6 +91,23 @@ MODE_ENV_VAR = "MEDIK_ETF_MODE"
 ACCOUNT_ENV_VAR = "MEDIK_ETF_ACCOUNT"
 PROTECTION_TIMEOUT_SEC = 10
 
+# --------------------------------------------------------------- quotes
+# reqTickers() asks IBKR for a SNAPSHOT, which is a different entitlement
+# from the streaming subscription this account holds, so every US ETF came
+# back as error 10089 ("does not extend support for API use") while TWS
+# showed a live, fee-waived quote subscription. Verified 2026-08-24 with
+# examples/mktdata_probe.py: streaming returns prices, snapshot does not.
+#
+# Streaming is not a drop-in replacement. A snapshot is one request that
+# returns a value; a stream is a subscription that fills in over the next few
+# seconds and then keeps updating, and each open one consumes a market-data
+# line (TWS allows about 100). So subscribe once per symbol and read the same
+# Ticker on later cycles: the wait becomes a startup cost paid once, not a
+# per-scan cost paid every five minutes for twenty symbols.
+LIVE_MARKET_DATA_TYPE = 1
+QUOTE_WARMUP_SEC = 5.0
+DELAYED_MARKET_DATA_TYPES = (3, 4)
+
 # Holdings this strategy must LEAVE ALONE rather than adopt or refuse over.
 # Empty by default on purpose: an exemption should be typed out deliberately.
 # The QQQ buy-and-hold core position is the obvious candidate — but note that
@@ -154,7 +171,89 @@ def _market_open(now: datetime) -> bool:
 # ------------------------------------------------------------ data + scoring
 
 
-def build_snapshot(ib, symbol: str, market_is_open: bool) -> ETFSnapshot | None:
+def usable_price(x) -> float:
+    """A positive price, or 0.0 when IBKR reported no value.
+
+    IBKR uses NaN and -1 for "no value". `float(ticker.bid or 0)` does NOT
+    handle that: NaN is truthy, so `NaN or 0` evaluates to NaN and the NaN
+    propagates into every comparison downstream, where it is silently False.
+    """
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if v == v and v > 0 else 0.0        # v == v is False for NaN
+
+
+def read_quote(ticker, fallback_close: float = 0.0) -> tuple:
+    """(bid, ask, last, problem). `problem` is "" when the quote is usable.
+
+    Delayed data is REFUSED rather than used. If the entitlement lapses or TWS
+    is configured to fall back, IBKR quietly serves 15-minute-old prices with
+    no error — and a strategy on 5-minute bars would keep trading, sizing
+    stops and targets off a quote from three bars ago. Failing to trade is
+    recoverable; trading on stale prices is not.
+    """
+    md = getattr(ticker, "marketDataType", None) or LIVE_MARKET_DATA_TYPE
+    if md in DELAYED_MARKET_DATA_TYPES:
+        return 0.0, 0.0, 0.0, (
+            f"DELAYED market data (marketDataType={md}) — refusing to trade a "
+            "5-minute strategy on a 15-minute-old quote")
+
+    bid, ask = usable_price(ticker.bid), usable_price(ticker.ask)
+    last = (usable_price(ticker.last) or usable_price(ticker.close)
+            or usable_price(fallback_close))
+    if not (bid and ask and last):
+        return 0.0, 0.0, 0.0, (
+            f"no usable quote (bid={ticker.bid!r} ask={ticker.ask!r} "
+            f"last={ticker.last!r} close={ticker.close!r})")
+    if ask < bid:
+        return 0.0, 0.0, 0.0, f"crossed quote (bid {bid:,.2f} > ask {ask:,.2f})"
+    return bid, ask, last, ""
+
+
+class QuoteFeed:
+    """Streaming quotes, subscribed once per symbol and reused thereafter.
+
+    Holding the subscriptions open is the point: the Ticker object updates in
+    place, so every cycle after the first reads current prices with no wait.
+    Twenty symbols is well inside the ~100-line TWS limit.
+    """
+
+    def __init__(self, ib, warmup_sec: float = QUOTE_WARMUP_SEC):
+        self.ib = ib
+        self.warmup_sec = warmup_sec
+        self._tickers: dict = {}
+        self._contracts: dict = {}
+
+    def quote(self, contract):
+        """The live Ticker for `contract`, subscribing on first use."""
+        symbol = contract.symbol
+        ticker = self._tickers.get(symbol)
+        if ticker is None:
+            ticker = self.ib.reqMktData(contract, "", False, False)
+            self._tickers[symbol] = ticker
+            self._contracts[symbol] = contract
+            # Only the first read of a symbol waits; ticks keep arriving after.
+            self.ib.sleep(self.warmup_sec)
+        return ticker
+
+    def cancel_all(self) -> int:
+        """Release the market-data lines. Safe to call more than once."""
+        released = 0
+        for symbol, contract in list(self._contracts.items()):
+            try:
+                self.ib.cancelMktData(contract)
+                released += 1
+            except Exception as exc:
+                log(f"  could not cancel market data for {symbol}: {exc!r}")
+            self._tickers.pop(symbol, None)
+            self._contracts.pop(symbol, None)
+        return released
+
+
+def build_snapshot(ib, symbol: str, market_is_open: bool,
+                   feed: "QuoteFeed | None" = None) -> ETFSnapshot | None:
     qualified = ib.qualifyContracts(Stock(symbol, "SMART", "USD"))
     if not qualified:
         log(f"  {symbol:<5} could not qualify contract")
@@ -175,12 +274,11 @@ def build_snapshot(ib, symbol: str, market_is_open: bool) -> ETFSnapshot | None:
         log(f"  {symbol:<5} insufficient bars (5m={len(bars5)} 15m={len(bars15)})")
         return None
 
-    [ticker] = ib.reqTickers(contract)
-    bid = float(ticker.bid or 0)
-    ask = float(ticker.ask or 0)
-    last = float(ticker.last or ticker.close or bars5[-1].close)
-    if not (bid > 0 and ask > 0 and last > 0):
-        log(f"  {symbol:<5} no usable quote (bid={bid} ask={ask} last={last})")
+    feed = feed if feed is not None else QuoteFeed(ib)
+    ticker = feed.quote(contract)
+    bid, ask, last, problem = read_quote(ticker, bars5[-1].close)
+    if problem:
+        log(f"  {symbol:<5} {problem}")
         return None
 
     # VWAP resets daily: pass only the CURRENT session's bars.
@@ -447,7 +545,8 @@ def place_bracket(ib, contract, sized, controls: SessionControls,
 def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
               open_trade: OpenTrade | None,
               contract_sink: dict | None = None,
-              account: str = "") -> OpenTrade | None:
+              account: str = "",
+              feed: "QuoteFeed | None" = None) -> OpenTrade | None:
     """One scan cycle. Returns the open trade after this cycle, or None.
 
     Order of business: read account -> manage any open position -> if flat,
@@ -473,7 +572,7 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
     # to find a new one.
     scores, contracts = {}, {}
     for symbol in ETF_UNIVERSE:
-        built = build_snapshot(ib, symbol, market_is_open)
+        built = build_snapshot(ib, symbol, market_is_open, feed)
         if built is None:
             continue
         snap, contract = built
@@ -579,6 +678,12 @@ def main() -> None:
     open_trade: OpenTrade | None = None
     last_contracts: dict = {}
 
+    # Requested explicitly rather than left at the library default, so the log
+    # records which data the run was authorised for. IBKR can serve delayed
+    # data silently; read_quote() refuses it, and this line says what was asked.
+    ib.reqMarketDataType(LIVE_MARKET_DATA_TYPE)
+    feed = QuoteFeed(ib)
+
     try:
         accounts = ib.managedAccounts()
         account, account_msg = resolve_account(accounts)
@@ -662,6 +767,9 @@ def main() -> None:
             log(line)
         log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
         log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
+        log(f"MARKET DATA: streaming, type {LIVE_MARKET_DATA_TYPE} "
+            f"(reqMktData snapshot=False; snapshots are a separate IBKR "
+            f"entitlement this account does not have)")
         log(f"SCAN INTERVAL: {SCAN_INTERVAL_SEC // 60} MINUTES")
         if not armed:
             log(f"LIVE ETF TRADING DISABLED — both {LIVE_ENV_VAR}=true and "
@@ -697,7 +805,7 @@ def main() -> None:
             log(f"scan @ {now:%H:%M:%S} ET")
             try:
                 open_trade = scan_once(ib, armed, controls, ledger, open_trade,
-                                       last_contracts, account)
+                                       last_contracts, account, feed)
             except Exception as exc:  # one bad cycle must not kill the run
                 controls.execution_errors += 1
                 log(f"CYCLE ERROR ({controls.execution_errors}): {exc!r}")
@@ -718,6 +826,9 @@ def main() -> None:
                     break
                 ib.sleep(10)
     finally:
+        released = feed.cancel_all()
+        if released:
+            log(f"released {released} market-data subscription(s)")
         client.disconnect()
         log("disconnected")
 
