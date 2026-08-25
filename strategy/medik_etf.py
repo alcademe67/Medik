@@ -584,8 +584,15 @@ def check_can_enter(
     state: PortfolioState,
     controls: SessionControls,
     now_minutes: int,
+    close_minutes: int = 16 * 60,
 ) -> tuple[bool, str]:
-    """Every gate between a ranked candidate and an order. First breach wins."""
+    """Every gate between a ranked candidate and an order. First breach wins.
+
+    `close_minutes` moves the no-entry buffer with the actual close. On a
+    half day the session ends at 13:00 ET, and a fixed 16:00 would let
+    entries keep firing for three hours after trading stopped, against quotes
+    that had stopped updating.
+    """
     if controls.entries_disabled:
         return False, f"entries disabled: {controls.disabled_reason}"
 
@@ -604,7 +611,7 @@ def check_can_enter(
             return False, (f"daily loss limit hit: -{loss_pct:.2f}% "
                            f"(limit {MAX_DAILY_LOSS_PCT}%)")
 
-    ok, why = within_trading_window(now_minutes)
+    ok, why = within_trading_window(now_minutes, close_minutes=close_minutes)
     if not ok:
         return False, why
 
@@ -649,6 +656,7 @@ def authorize_order(
     now_minutes: int,
     ledger: "TradeLedger",
     now_ts: float,
+    close_minutes: int = 16 * 60,
 ) -> AuthorizationResult:
     """Every gate between a ranked candidate and a live order.
 
@@ -684,7 +692,7 @@ def authorize_order(
     checks["no_conflicting_open_order"] = state.open_order_count == 0
     checks["not_duplicate"] = not ledger.is_blocked(sized.symbol, now_ts)
 
-    can_enter, _ = check_can_enter(state, controls, now_minutes)
+    can_enter, _ = check_can_enter(state, controls, now_minutes, close_minutes)
     checks["session_gates_ok"] = can_enter
     checks["entries_enabled"] = not controls.entries_disabled
 

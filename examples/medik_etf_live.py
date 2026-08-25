@@ -82,6 +82,9 @@ from strategy.medik_etf_ops import (
     kill_switch_reason,
     reconcile_startup,
 )
+from strategy.market_calendar import (
+    close_minutes, coverage_warning, describe, is_trading_day,
+)
 from strategy.medik_mtf import OHLCV, drop_forming_bar
 
 NY = ZoneInfo("America/New_York")
@@ -165,7 +168,15 @@ def _now_minutes(now: datetime) -> int:
 
 
 def _market_open(now: datetime) -> bool:
-    return now.weekday() < 5 and 9 * 60 + 30 <= _now_minutes(now) < 16 * 60
+    """Open for trading right now, holidays and half-days included.
+
+    Weekday-and-clock alone was fine while a human started the bot each
+    morning -- nobody runs it on Thanksgiving. Under a scheduled task it
+    fires every weekday whether the market exists that day or not.
+    """
+    if not is_trading_day(now.date()):
+        return False
+    return 9 * 60 + 30 <= _now_minutes(now) < close_minutes(now.date())
 
 
 # ------------------------------------------------------------ data + scoring
@@ -645,6 +656,7 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
         live_enabled=armed, connected=ib.isConnected(), state=state,
         controls=controls, candidate=best, sized=sized,
         now_minutes=now_min, ledger=ledger, now_ts=now_ts,
+        close_minutes=close_minutes(now.date()),
     )
     if not auth:
         log(f"NO ORDER — failed checks: {', '.join(auth.failures)}")
@@ -771,6 +783,11 @@ def main() -> None:
             f"(reqMktData snapshot=False; snapshots are a separate IBKR "
             f"entitlement this account does not have)")
         log(f"SCAN INTERVAL: {SCAN_INTERVAL_SEC // 60} MINUTES")
+        today = datetime.now(NY).date()
+        log(f"SESSION: {describe(today)}")
+        stale = coverage_warning(today)
+        if stale:
+            log(f"WARNING | {stale}")
         if not armed:
             log(f"LIVE ETF TRADING DISABLED — both {LIVE_ENV_VAR}=true and "
                 f"{RISK_ACK_ENV_VAR}=true are required. Scanning only.")
@@ -795,6 +812,7 @@ def main() -> None:
                 break
 
             if not _market_open(now):
+                log(describe(now.date()))
                 if open_trade is not None:
                     log("market closed with a position still open — "
                         "protective legs are GTC and remain working")
