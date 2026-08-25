@@ -141,8 +141,10 @@ class SymbolResult:
     symbol: str
     trades: list = field(default_factory=list)
     skips_whole_share: int = 0
-    skips_other: int = 0
-    signals: int = 0
+    skips_v2: int = 0          # setup rejected by v2's extra filters
+    skips_edge: int = 0        # target cannot clear the round-trip cost
+    skips_other: int = 0       # any other sizing rejection
+    signals: int = 0           # score_candidate() said TRADE
     sessions: int = 0
 
     @property
@@ -169,6 +171,8 @@ class SymbolResult:
             "symbol": self.symbol, "trades": n, "sessions": self.sessions,
             "signals": self.signals,
             "skips_whole_share": self.skips_whole_share,
+            "skips_v2": self.skips_v2,
+            "skips_edge": self.skips_edge,
             "skips_other": self.skips_other,
             "win_rate": len(self.wins) / n if n else 0.0,
             "gross": gross, "commission": comm, "net": self.net,
@@ -286,12 +290,17 @@ def backtest_symbol(symbol: str, bars, times, equity: float,
         cs = score_candidate(snap)
         if cs.signal != "TRADE":
             continue
+        # Counted here, BEFORE any rejection, so every skip below is a subset
+        # of it. Incrementing a skip counter earlier than `signals` made the
+        # two count different populations, and a symbol could report more
+        # skips than signals -- which reads as a bug in the strategy rather
+        # than in the tally.
+        res.signals += 1
         if version == "v2":
             ok_v2, _ = qualifies_v2(cs)
             if not ok_v2:
-                res.skips_other += 1
+                res.skips_v2 += 1
                 continue
-        res.signals += 1
 
         state = PortfolioState(running, running, (), 0)
         try:
@@ -314,7 +323,7 @@ def backtest_symbol(symbol: str, bars, times, equity: float,
             # worth taking.
             edge = net_edge_check(symbol, sized.quantity, fill, stop, target)
             if not edge.passes:
-                res.skips_other += 1
+                res.skips_edge += 1
                 continue
         entry_fill = fill
         entry_comm = commission(sized.quantity, fill * sized.quantity)
@@ -333,8 +342,9 @@ def _fmt(summary: dict) -> str:
     pf_txt = "inf" if pf == float("inf") else f"{pf:.2f}"
     return (f"{s['symbol']:<6}{s['trades']:>7}{s['win_rate']:>8.0%}"
             f"{s['gross']:>+10.2f}{s['commission']:>10.2f}{s['net']:>+10.2f}"
-            f"{pf_txt:>8}{s['expectancy']:>+11.3f}{s['skips_whole_share']:>8}"
-            f"{s['signals']:>9}")
+            f"{pf_txt:>8}{s['expectancy']:>+11.3f}{s['signals']:>9}"
+            f"{s['skips_whole_share']:>8}{s['skips_v2']:>6}{s['skips_edge']:>6}"
+            f"{s['skips_other']:>7}")
 
 
 def report(results: list[SymbolResult], equity: float, label: str) -> dict:
@@ -342,7 +352,8 @@ def report(results: list[SymbolResult], equity: float, label: str) -> dict:
     print(f"{label}")
     print("=" * 92)
     print(f"{'ETF':<6}{'trades':>7}{'win%':>8}{'gross':>10}{'comm':>10}"
-          f"{'net':>10}{'PF':>8}{'expect':>11}{'wsSkip':>8}{'signals':>9}")
+          f"{'net':>10}{'PF':>8}{'expect':>11}{'signals':>9}"
+          f"{'wsSkip':>8}{'v2':>6}{'edge':>6}{'other':>7}")
     print("-" * 92)
     for r in sorted(results, key=lambda x: -x.net):
         if r.trades or r.signals:
@@ -357,6 +368,9 @@ def report(results: list[SymbolResult], equity: float, label: str) -> dict:
     gains = sum(t["net"] for t in wins)
     pains = -sum(t["net"] for t in losses)
     ws_skips = sum(r.skips_whole_share for r in results)
+    v2_skips = sum(r.skips_v2 for r in results)
+    edge_skips = sum(r.skips_edge for r in results)
+    other_skips = sum(r.skips_other for r in results)
     signals = sum(r.signals for r in results)
     sessions = max((r.sessions for r in results), default=0)
 
@@ -392,10 +406,22 @@ def report(results: list[SymbolResult], equity: float, label: str) -> dict:
         print(f"  trades/session  {len(all_trades) / sessions:.2f}" if sessions else "")
     else:
         print("  NO TRADES TAKEN")
-        print(f"  signals found   {signals}")
-        print(f"  rejected for whole-share sizing: {ws_skips}")
+    # Printed whether or not trades were taken: when the answer is zero, WHY
+    # it is zero is the entire result, and when it is not, the same breakdown
+    # says how much of the edge never reached the market.
+    print(f"  signals (score=TRADE)            {signals}")
+    print(f"    rejected, v2 setup filters     {v2_skips}")
+    print(f"    rejected, below 1 whole share  {ws_skips}")
+    print(f"    rejected, net edge vs cost     {edge_skips}")
+    print(f"    rejected, other sizing         {other_skips}")
+    print(f"    TAKEN                          {len(all_trades)}")
+    accounted = v2_skips + ws_skips + edge_skips + other_skips + len(all_trades)
+    if accounted != signals:
+        print(f"    WARNING: {signals} signals but {accounted} accounted for")
     return {"trades": len(all_trades), "net": net, "signals": signals,
-            "whole_share_skips": ws_skips, "max_drawdown": maxdd}
+            "whole_share_skips": ws_skips, "v2_skips": v2_skips,
+            "edge_skips": edge_skips, "other_skips": other_skips,
+            "max_drawdown": maxdd}
 
 
 # ===========================================================================
