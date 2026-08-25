@@ -119,8 +119,41 @@ DELAYED_MARKET_DATA_TYPES = (3, 4)
 IGNORE_SYMBOLS: tuple = ()
 
 
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+# How long to keep retrying TWS at startup. Task Scheduler fires at a fixed
+# time; TWS restarts and re-logs-in on its own schedule, so on some mornings
+# the bot arrives first. Two retries over six seconds gave up before TWS had
+# finished starting. This waits instead — and still refuses to trade if the
+# connection never comes.
+CONNECT_WAIT_MINUTES = 20
+CONNECT_RETRY_SECONDS = 30
+
+EXIT_NO_TWS = 3          # distinct codes so Task Scheduler shows WHY it failed
+EXIT_PREFLIGHT = 4
+EXIT_INCOHERENT = 5
+
+
 def log(msg: str) -> None:
-    print(f"[{datetime.now(NY):%H:%M:%S}] {msg}", flush=True)
+    """Print, and append to a dated file.
+
+    Unattended, print() alone is worthless: Task Scheduler discards stdout, so
+    a morning that failed looks identical to one that never ran. Writing the
+    file here rather than relying on shell redirection means the log exists
+    however the process was launched.
+
+    A logging failure must never stop a trading loop, so it is swallowed —
+    stdout still carries the line for anyone watching.
+    """
+    line = f"[{datetime.now(NY):%Y-%m-%d %H:%M:%S}] {msg}"
+    print(line, flush=True)
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        path = LOG_DIR / f"medik_etf_{datetime.now(NY):%Y-%m-%d}.log"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
 
 
 def live_enabled() -> bool:
@@ -676,15 +709,65 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
                      sized.target, now_ts)
 
 
-def main() -> None:
+def connect_with_wait(client, deadline_minutes: int = CONNECT_WAIT_MINUTES):
+    """Connect to TWS, retrying until a deadline. None if it never came up.
+
+    Returns rather than raises so the caller can exit with a clear message
+    instead of a traceback. NOTHING about the trading path is relaxed by
+    waiting: without a connection there is no account, no quote and no order,
+    and authorize_order()'s ibkr_connected check fails independently.
+    """
+    deadline = time.time() + deadline_minutes * 60
+    # A second, independent bound. The deadline assumes the clock advances
+    # between attempts, which is true only because we sleep — so a very short
+    # or suppressed sleep would spin forever, filling the log. Bounding the
+    # attempt count as well means neither condition alone has to hold.
+    max_attempts = max(1, int(deadline_minutes * 60 / max(CONNECT_RETRY_SECONDS, 1)) + 2)
+    attempt = 0
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            ib = client.connect(timeout=15, retries=0)
+            if ib.isConnected():
+                log(f"IBKR: CONNECTED on attempt {attempt}")
+                return ib
+            log(f"IBKR: attempt {attempt} returned a disconnected client")
+        except Exception as exc:
+            log(f"IBKR: attempt {attempt} failed — {type(exc).__name__}: {exc}")
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            log(f"IBKR: no connection after {deadline_minutes} minutes "
+                f"({attempt} attempts)")
+            return None
+        log(f"  retrying in {CONNECT_RETRY_SECONDS}s "
+            f"({remaining / 60:.0f} min left before giving up)")
+        time.sleep(min(CONNECT_RETRY_SECONDS, remaining))
+
+    log(f"IBKR: giving up after {attempt} attempts")
+    return None
+
+
+def main() -> int:
     armed, arming_lines = arming_report()
     log("=" * 66)
     log("MEDIK ETF ACTIVE LIVE")
     log("=" * 66)
 
+    # Checked before connecting: if the operator stopped the bot, that
+    # decision outranks everything below it.
+    if kill_switch_active():
+        log(f"STOP_MEDIK present — not starting. {kill_switch_reason()}")
+        return 0
+
     client = IBKRClient()
-    ib = client.connect(retries=2)
-    log(f"IBKR: {'CONNECTED' if ib.isConnected() else 'NOT CONNECTED'}")
+    ib = connect_with_wait(client)
+    if ib is None:
+        log("EXITING — no TWS connection, so no account, no market data and "
+            "NO ORDER. Check that TWS is open, logged in, and that "
+            "'Enable ActiveX and Socket Clients' is on with port "
+            f"{client.port}.")
+        return EXIT_NO_TWS
     controls = None
     ledger = TradeLedger()
     open_trade: OpenTrade | None = None
@@ -739,7 +822,7 @@ def main() -> None:
             log(f"  set {ACCOUNT_ENV_VAR}=<account id> to choose the account, and "
                 f"{MODE_ENV_VAR}=paper or {MODE_ENV_VAR}=live to match it")
             log("EXITING — no scan, no orders")
-            return
+            return EXIT_PREFLIGHT
         if mode.strip().lower() == "paper":
             log("PAPER MODE — fills come from IBKR's paper account, not from "
                 "this program; the live gate still applies")
@@ -767,7 +850,7 @@ def main() -> None:
 
         if not decision.may_run:
             log("ERROR | account state is incoherent — not starting")
-            return
+            return EXIT_INCOHERENT
 
         open_trade = decision.adopted
         if open_trade is not None:
@@ -849,7 +932,8 @@ def main() -> None:
             log(f"released {released} market-data subscription(s)")
         client.disconnect()
         log("disconnected")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)
