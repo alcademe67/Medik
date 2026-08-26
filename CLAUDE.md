@@ -494,9 +494,39 @@ ACCOUNT U26920266 (Individual, appeared 2026-08-24) under the same single
 username. A second username would need a FRESH request.
 **Requested 2026-08-26: IBKR web ticket #243901** (Account Services →
 Account Configuration/Permissions) asking IBKR to create the second
-username (preferred `alcademe6767`) or enable the missing Users & Access
-Rights section — the self-service path IBot describes does not exist on
-either account. Typical response within 48h; check the Message Center.
+username or enable the missing Users & Access Rights section — the
+self-service path IBot describes does not exist on either account.
+
+**SECOND USERNAME EXISTS: `alcademe0209` — status PENDING as of
+2026-08-26** (owner's report; IBKR to confirm shortly). FINAL ACTIVATION
+STEP, once IBKR confirms it — this is the whole unblock sequence and
+none of it is code:
+
+1. **Log the Client Portal Gateway in as `alcademe0209`** — never
+   `alcademe67` — at https://localhost:5000 (start it with
+   `clientportal.gw\start_cpgw.bat` if it isn't running). This is the
+   entire point of the second username: the gateway holds ITS session
+   while TWS keeps `alcademe67`, so neither bumps the other.
+2. **Enable market data for `alcademe0209`**: subscriptions are
+   per-USERNAME. In Client Portal → Settings → Market Data Subscriptions
+   (scoped to the new username), add `US Real-Time Non Consolidated
+   Streaming Quotes` (fee waived). Without this the new session serves
+   delayed and `read_quote()` refuses it.
+3. **The equity minimum still binds** (Message #M82996142, 2026-08-14:
+   snapshot capability disabled below the market-data minimum equity,
+   commonly USD 500; account is ~$286). If quotes still come back
+   `DB`/delayed after steps 1–2, this is the remaining lever — the
+   account needs topping up. Account-level, so the new username does not
+   bypass it.
+4. **Verify with the bot itself**: `MEDIK_ETF_DRY_RUN=true` +
+   `MEDIK_ETF_QUOTE_SOURCE=cpapi` — startup must log `QUOTE SESSION: OK`
+   and per-symbol quotes without delayed-data rejections. No code or
+   config changes are needed: `run_medik_etf.bat` already points at the
+   gateway, and nothing in the repo names the username.
+5. TWS stays as it is (auto-restart 06:00, `alcademe67`); the scheduled
+   task picks everything up automatically — the self-healing wrapper
+   retries every 5 minutes, so a gateway logged in mid-session is
+   adopted without touching anything.
 
 **And a second, independent quote blocker found (Message #M82996142,
 2026-08-14):** "your eligibility for requesting snapshots was disabled"
