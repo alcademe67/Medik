@@ -492,6 +492,11 @@ Market Data Subscriptions username selector shows exactly ONE username
 resolved history: the July application most plausibly became the second
 ACCOUNT U26920266 (Individual, appeared 2026-08-24) under the same single
 username. A second username would need a FRESH request.
+**Requested 2026-08-26: IBKR web ticket #243901** (Account Services →
+Account Configuration/Permissions) asking IBKR to create the second
+username (preferred `alcademe6767`) or enable the missing Users & Access
+Rights section — the self-service path IBot describes does not exist on
+either account. Typical response within 48h; check the Message Center.
 
 **And a second, independent quote blocker found (Message #M82996142,
 2026-08-14):** "your eligibility for requesting snapshots was disabled"
