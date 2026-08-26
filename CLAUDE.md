@@ -484,6 +484,26 @@ market-data subscription so the TWS socket itself serves real-time —
 verify with IBKR that the specific subscription extends API rights BEFORE
 paying, given the 10089 history; (3) accept the idle bot.
 
+**Message Center checked 2026-08-26 (owner logged into Client Portal, Claude
+navigated):** there is **NO pending verification** for `alcademe6767` — Pending
+Tasks empty, no "Document Required", no Users & Access Rights section, and the
+Market Data Subscriptions username selector shows exactly ONE username
+(`alcademe67`). The stale "second username pending since 07-23" note is
+resolved history: the July application most plausibly became the second
+ACCOUNT U26920266 (Individual, appeared 2026-08-24) under the same single
+username. A second username would need a FRESH request.
+
+**And a second, independent quote blocker found (Message #M82996142,
+2026-08-14):** "your eligibility for requesting snapshots was disabled"
+because U26953060's equity fell below IBKR's market-data minimum equity
+requirement. The cpapi path uses `/iserver/marketdata/snapshot`, so this
+plausibly explains why the gateway served `DB`/delayed on 2026-08-26 even
+while authenticated. Restoring it means bringing equity back above IBKR's
+minimum (commonly USD 500; verify the current figure with IBKR). So the
+full unblock for automated trading is BOTH: (a) equity above the market-data
+minimum, and (b) a second username (or API-entitled paid data) so quotes and
+TWS can coexist. Neither exists today; the bot idles safely at preflight.
+
 ## COST ARITHMETIC — why activity is the enemy here (2026-08-26)
 
 Commission is `clamp($0.005/share, min $1.00, max 1% of value)`. At this
