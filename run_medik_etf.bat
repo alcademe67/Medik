@@ -11,6 +11,17 @@ REM  unattended run behave like the one you tested by hand.
 REM
 REM  Output is redirected to a dated log because Task Scheduler throws
 REM  stdout away. Without this you would have no record of a run at all.
+REM
+REM  SELF-HEALING (added 2026-08-26, owner: "make sure bot is always
+REM  connected and running"): the task fires once at 06:45, so a bot
+REM  that exits mid-session would otherwise stay down until tomorrow.
+REM  This wrapper retries every 5 minutes on the recoverable exit codes
+REM  (3 = no TWS, 4 = preflight/quote session, 5 = incoherent state,
+REM  or a crash) and stops only on a clean exit 0 (kill switch, not a
+REM  trading day, or session ended), on STOP_MEDIK appearing, or after
+REM  MAX_RETRIES attempts (~ the whole session at 5-minute spacing).
+REM  A gateway that comes alive mid-morning is picked up by the next
+REM  retry with no human involved.
 REM ===================================================================
 setlocal
 cd /d "%~dp0"
@@ -31,19 +42,25 @@ REM     running and logged in at https://localhost:5000 the bot exits
 REM     at preflight rather than trading on nothing.
 set MEDIK_ETF_QUOTE_SOURCE=cpapi
 
+set MAX_RETRIES=80
+set RETRY_WAIT_SEC=300
+set ATTEMPT=0
+
 if not exist logs mkdir logs
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set STAMP=%%I
 set LOGFILE=logs\medik_etf_%STAMP%.log
 
+:runloop
 if exist STOP_MEDIK (
     echo [%TIME%] STOP_MEDIK present -- not starting. >> "%LOGFILE%"
     echo STOP_MEDIK present -- not starting.
     exit /b 0
 )
 
+set /a ATTEMPT+=1
 echo. >> "%LOGFILE%"
 echo ================================================================= >> "%LOGFILE%"
-echo run started %DATE% %TIME% >> "%LOGFILE%"
+echo attempt %ATTEMPT%/%MAX_RETRIES% started %DATE% %TIME% >> "%LOGFILE%"
 echo ================================================================= >> "%LOGFILE%"
 
 if exist ".venv\Scripts\python.exe" (
@@ -53,6 +70,18 @@ if exist ".venv\Scripts\python.exe" (
 )
 set RC=%ERRORLEVEL%
 
-echo run finished %DATE% %TIME% exit=%RC% >> "%LOGFILE%"
-if not "%RC%"=="0" echo NONZERO EXIT %RC% -- read the log above >> "%LOGFILE%"
-exit /b %RC%
+echo attempt %ATTEMPT% finished %DATE% %TIME% exit=%RC% >> "%LOGFILE%"
+
+if "%RC%"=="0" (
+    echo clean exit -- done for the day. >> "%LOGFILE%"
+    exit /b 0
+)
+
+if %ATTEMPT% GEQ %MAX_RETRIES% (
+    echo NONZERO EXIT %RC% and retry budget exhausted -- giving up until the next scheduled run. >> "%LOGFILE%"
+    exit /b %RC%
+)
+
+echo exit %RC% is recoverable -- retrying in %RETRY_WAIT_SEC%s. >> "%LOGFILE%"
+ping -n %RETRY_WAIT_SEC% 127.0.0.1 >nul
+goto runloop
