@@ -54,6 +54,7 @@ from ib_async import MarketOrder, Stock
 from ibkr.accounts import belongs_to, order_belongs_to
 from ibkr.accounts import resolve_account as _resolve_account
 from ibkr.client import IBKRClient
+from ibkr.cpapi import ClientPortalQuotes, CpApiError
 from strategy.medik_etf import (
     ETF_UNIVERSE,
     MAX_CAPITAL_UTILIZATION,
@@ -92,6 +93,8 @@ LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
 RISK_ACK_ENV_VAR = "LIVE_RISK_ACK"
 MODE_ENV_VAR = "MEDIK_ETF_MODE"
 DRY_RUN_ENV_VAR = "MEDIK_ETF_DRY_RUN"
+QUOTE_SOURCE_ENV_VAR = "MEDIK_ETF_QUOTE_SOURCE"      # "tws" | "cpapi"
+CPAPI_URL_ENV_VAR = "MEDIK_ETF_CPAPI_URL"
 ACCOUNT_ENV_VAR = "MEDIK_ETF_ACCOUNT"
 PROTECTION_TIMEOUT_SEC = 10
 
@@ -385,6 +388,72 @@ class QuoteFeed:
         return released
 
 
+class ClientPortalFeed:
+    """Quotes from the Client Portal Web API, shaped like QuoteFeed.
+
+    Same `quote(contract)` signature as the TWS feed, and it returns an object
+    read_quote() can consume, so freshness, spread, crossed-market and
+    delayed-data checks all apply here identically. One set of rules for both
+    providers rather than two that can drift.
+
+    Contracts still come from TWS -- qualifyContracts() supplies the conid,
+    which is what the Client Portal addresses instruments by.
+    """
+
+    def __init__(self, client: ClientPortalQuotes):
+        self.client = client
+        self._conids: dict = {}
+        self._cache: dict = {}
+        self._cache_stamp = 0.0
+
+    def session_ok(self) -> tuple:
+        return self.client.auth_status()
+
+    def quote(self, contract):
+        """Latest quote for `contract`, refreshing the whole batch at most
+        once a second so a 20-symbol scan is one HTTP round trip, not twenty."""
+        conid = int(getattr(contract, "conId", 0) or 0)
+        if not conid:
+            return None
+        self._conids[contract.symbol] = conid
+        if time.time() - self._cache_stamp > 1.0:
+            try:
+                self._cache = self.client.snapshot(list(self._conids.values()))
+            except CpApiError as exc:
+                log(f"  Client Portal snapshot failed: {exc}")
+                self._cache = {}
+            self._cache_stamp = time.time()
+        return self._cache.get(conid)
+
+    def cancel_all(self) -> int:
+        released = len(self._conids)
+        self.client.unsubscribe_all()
+        self._conids.clear()
+        self._cache.clear()
+        return released
+
+
+def make_quote_feed(ib):
+    """(feed, description). Chooses the provider from the environment.
+
+    Defaults to TWS. A provider is opt-in by exact name and an unrecognised
+    value is refused rather than guessed, because silently falling back to a
+    feed the operator did not choose is how a bot ends up trading data nobody
+    audited.
+    """
+    source = os.environ.get(QUOTE_SOURCE_ENV_VAR, "tws").strip().lower()
+    if source in ("", "tws"):
+        return QuoteFeed(ib), "TWS socket API (reqMktData, streaming)"
+    if source == "cpapi":
+        url = os.environ.get(CPAPI_URL_ENV_VAR, "").strip()
+        client = ClientPortalQuotes(url) if url else ClientPortalQuotes()
+        return ClientPortalFeed(client), (
+            f"IBKR Client Portal Web API ({client.base_url})")
+    raise SystemExit(
+        f"{QUOTE_SOURCE_ENV_VAR}={source!r} is not recognised — "
+        "use 'tws' or 'cpapi'. Refusing to guess which feed to trade on.")
+
+
 def build_snapshot(ib, symbol: str, market_is_open: bool,
                    feed: "QuoteFeed | None" = None) -> ETFSnapshot | None:
     qualified = ib.qualifyContracts(Stock(symbol, "SMART", "USD"))
@@ -409,6 +478,9 @@ def build_snapshot(ib, symbol: str, market_is_open: bool,
 
     feed = feed if feed is not None else QuoteFeed(ib)
     ticker = feed.quote(contract)
+    if ticker is None:
+        log(f"  {symbol:<5} no quote returned by the feed")
+        return None
     bid, ask, last, problem = read_quote(ticker, bars5[-1].close)
     if problem:
         log(f"  {symbol:<5} {problem}")
@@ -884,7 +956,7 @@ def main() -> int:
     # records which data the run was authorised for. IBKR can serve delayed
     # data silently; read_quote() refuses it, and this line says what was asked.
     ib.reqMarketDataType(LIVE_MARKET_DATA_TYPE)
-    feed = QuoteFeed(ib)
+    feed, feed_desc = make_quote_feed(ib)
 
     try:
         accounts = ib.managedAccounts()
@@ -973,9 +1045,18 @@ def main() -> int:
         else:
             log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
         log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
-        log(f"MARKET DATA: streaming, type {LIVE_MARKET_DATA_TYPE} "
-            f"(reqMktData snapshot=False; snapshots are a separate IBKR "
-            f"entitlement this account does not have)")
+        log(f"MARKET DATA: {feed_desc}")
+
+        # A quote provider that cannot prove it is authenticated must not be
+        # traded on. Checked at startup so the run fails loudly at 06:45
+        # rather than silently skipping every symbol for six hours.
+        if hasattr(feed, "session_ok"):
+            ok_session, why_session = feed.session_ok()
+            log(f"QUOTE SESSION: {'OK — ' if ok_session else 'FAILED — '}{why_session}")
+            if not ok_session:
+                log("EXITING — the quote feed is not usable, so there is no "
+                    "price to trade on and NO ORDER can be justified")
+                return EXIT_PREFLIGHT
         log(f"SCAN INTERVAL: {SCAN_INTERVAL_SEC // 60} MINUTES")
         today = datetime.now(NY).date()
         log(f"SESSION: {describe(today)}")
