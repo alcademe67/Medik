@@ -76,6 +76,14 @@ from strategy.medik_etf import (
     should_rotate,
     size_trade,
 )
+from strategy.medik_etf_v2 import (
+    MIN_EDGE_MULTIPLE,
+    MIN_SCORE_V2,
+    REENTRY_COOLDOWN_SEC_V2,
+    V2_UNIVERSE,
+    net_edge_check,
+    qualifies_v2,
+)
 from strategy.medik_etf_ops import (
     WorkingOrder,
     verify_account_mode,
@@ -89,6 +97,15 @@ from strategy.market_calendar import (
 from strategy.medik_mtf import OHLCV, drop_forming_bar
 
 NY = ZoneInfo("America/New_York")
+
+# The bot scans v2's trimmed, non-inverse universe (owner decision,
+# 2026-08-26: "switch bot to v2 universe but keep commissions
+# cost-efficient"). Reconciliation still recognises every symbol either
+# version ever traded, so a legacy position in an inverse fund is adopted
+# and managed at startup rather than declared incoherent.
+SCAN_UNIVERSE = list(V2_UNIVERSE)
+RECONCILE_UNIVERSE = list(dict.fromkeys([*V2_UNIVERSE, *ETF_UNIVERSE]))
+
 LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
 RISK_ACK_ENV_VAR = "LIVE_RISK_ACK"
 MODE_ENV_VAR = "MEDIK_ETF_MODE"
@@ -776,7 +793,7 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
     # ---- score the universe first: needed to manage the position as well as
     # to find a new one.
     scores, contracts = {}, {}
-    for symbol in ETF_UNIVERSE:
+    for symbol in SCAN_UNIVERSE:
         built = build_snapshot(ib, symbol, market_is_open, feed)
         if built is None:
             continue
@@ -832,10 +849,28 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
         return None
 
     best = ranked[0]
+
+    # v2 gate 1: stricter technical qualification (score floor 85 and a
+    # pullback/reclaim required) on top of v1's TRADE signal.
+    ok_v2, why_v2 = qualifies_v2(best)
+    if not ok_v2:
+        log(f"NO TRADE | reason=v2 filter | {best.symbol} | {why_v2}")
+        return None
+
     try:
         sized = size_trade(best, state)
     except SizingRejected as exc:
         log(f"NO TRADE | reason=sizing | {best.symbol} | {exc}")
+        return None
+
+    # v2 gate 2 -- the cost rule: the target must clear the full round trip
+    # (both commissions, spread crossed twice, slippage) by MIN_EDGE_MULTIPLE
+    # or the trade is refused regardless of how good the chart looks.
+    edge = net_edge_check(sized.symbol, sized.quantity, sized.entry,
+                          sized.stop, sized.target)
+    log(f"EDGE | {sized.symbol} | {edge.reason}")
+    if not edge.passes:
+        log(f"NO TRADE | reason=net edge vs cost | {sized.symbol}")
         return None
 
     log(f"SIGNAL | BUY {sized.symbol} | score={best.score:.1f} | "
@@ -948,7 +983,7 @@ def main() -> int:
             f"{client.port}.")
         return EXIT_NO_TWS
     controls = None
-    ledger = TradeLedger()
+    ledger = TradeLedger(cooldown_sec=REENTRY_COOLDOWN_SEC_V2)
     open_trade: OpenTrade | None = None
     last_contracts: dict = {}
 
@@ -1021,7 +1056,7 @@ def main() -> int:
             if t.orderStatus.status not in DEAD_ORDER_STATUSES
             and order_belongs_to(t, account)
         ]
-        decision = reconcile_startup(list(state.positions), working, ETF_UNIVERSE,
+        decision = reconcile_startup(list(state.positions), working, RECONCILE_UNIVERSE,
                                      ignore_symbols=IGNORE_SYMBOLS)
         for note in decision.notes:
             log(f"RECONCILIATION | {note}")
@@ -1045,6 +1080,10 @@ def main() -> int:
         else:
             log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
         log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
+        log(f"STRATEGY: v2 — {len(SCAN_UNIVERSE)} non-inverse ETFs, "
+            f"score floor {MIN_SCORE_V2:.0f}, reclaim required, "
+            f"net edge >= {MIN_EDGE_MULTIPLE:.1f}x round-trip cost, "
+            f"re-entry cooldown {REENTRY_COOLDOWN_SEC_V2 // 60} min")
         log(f"MARKET DATA: {feed_desc}")
 
         # A quote provider that cannot prove it is authenticated must not be

@@ -570,6 +570,20 @@ the backtester's own warning stands: that converts OOS into in-sample and
 no clean test remains. A new idea needs a fresh spec and a fresh test
 through this same harness before anyone calls it working.
 
+**Live bot switched to the v2 configuration (owner instruction,
+2026-08-26: "switch bot to v2 universe but keep commissions
+cost-efficient").** `examples/medik_etf_live.py` now scans `V2_UNIVERSE`
+(12 liquid non-inverse ETFs), applies BOTH v2 gates before
+`authorize_order` — `qualifies_v2` (score ≥ 85 + pullback/reclaim) and
+`net_edge_check` (target must clear the full round-trip cost by 1.5×,
+which is the commission-efficiency rule) — and uses the 30-minute v2
+re-entry cooldown. Startup reconciliation still recognises v1-only
+symbols so a legacy inverse-fund position is adopted, not orphaned.
+Pinned by `tests/test_medik_etf_v2_wiring.py`. Said once and honestly:
+this is the SAME v2 configuration the table above tested — the switch
+reduces trade count and refuses cost-losing entries, but the RED verdict
+is unchanged; nothing here creates an edge.
+
 Footnote: several runs printed "N signals but N−1 accounted for" — a
 signal whose position was still open when the data ran out landed in no
 bucket. Fixed 2026-08-26: counted as "still open at end of data" in the
