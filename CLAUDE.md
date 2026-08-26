@@ -486,6 +486,47 @@ day at $286 is $126/month in commissions — 44% of the account per month.
 State this whenever "make it more active" comes up; the owner has heard it
 and may still choose to proceed, which is their call.
 
+## ETF INTRADAY BACKTEST VERDICT (2026-08-26) — RED at every size, both versions
+
+First-ever run of `backtest/medik_etf_bt.py` (item 4 of the 08-26 handoff):
+6 months of real 5-minute IBKR bars, 2026-02-23 → 2026-08-26, 8 symbols,
+~10,040 bars each, real commission schedule, stop-first fills, spread and
+slippage modelled. Promotion gates evaluated on the out-of-sample window
+(final 40%, parameters untouched). Every configuration failed:
+
+| run | net P&L (full period) | OOS net PF | OOS expectancy | verdict |
+|---|---|---|---|---|
+| v2 @ $290 | −$49.99 (−17.2%) | 0.25 | −$0.82/trade | RED |
+| v2 @ $500 | −$129.56 (−25.9%) | 0.26 | −$1.95/trade | RED |
+| v2 @ $1,000 | −$492.22 (−49.2%) | 0.38 | −$2.45/trade | RED |
+| v2 @ $2,500 | −$1,396.36 (−55.9%) | 0.53 | −$3.49/trade | RED |
+| v2 @ $5,000 | −$2,376.61 (−47.5%) | 0.63 | −$4.97/trade | RED |
+| v1 @ $500 | −$636.04 (−127.2%) | 0.11 | −$1.94/trade | RED |
+
+Two findings, and the second kills the it-works-at-scale hypothesis:
+
+1. **v1 is catastrophic.** 19.1% win rate over 320 trades; $564.64 of
+   commission against $500 of starting equity; the simulated account went
+   below zero. v1 is what `examples/medik_etf_live.py` trades when armed.
+2. **There is no gross edge at any size.** The COST ARITHMETIC table above
+   assumed the strategy wins before costs and commission is the only
+   obstacle. Measured, gross profit factor is 0.69–1.01 across every run —
+   the strategy loses BEFORE commission once enough signals clear the
+   whole-share and net-edge gates. More equity admits more qualifying
+   trades and loses more dollars. Scaling the account does not rescue it;
+   the "viable around $2,000" line in the cost table is about cost drag
+   only and must not be quoted as a promise that the strategy works there.
+
+Consequences: do not arm `medik_etf_live.py` (either version) as
+configured. Do not retune parameters against this out-of-sample window —
+the backtester's own warning stands: that converts OOS into in-sample and
+no clean test remains. A new idea needs a fresh spec and a fresh test
+through this same harness before anyone calls it working.
+
+Footnote: several runs print "N signals but N−1 accounted for" — an
+off-by-one in the backtester's rejection-accounting display, not in the
+trade simulation; it does not move any verdict.
+
 ## Account facts (verified, stable)
 
 - **The login manages TWO accounts (since 2026-08-24): U26953060 (funded,
