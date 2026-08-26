@@ -43,7 +43,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -91,6 +91,7 @@ NY = ZoneInfo("America/New_York")
 LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
 RISK_ACK_ENV_VAR = "LIVE_RISK_ACK"
 MODE_ENV_VAR = "MEDIK_ETF_MODE"
+DRY_RUN_ENV_VAR = "MEDIK_ETF_DRY_RUN"
 ACCOUNT_ENV_VAR = "MEDIK_ETF_ACCOUNT"
 PROTECTION_TIMEOUT_SEC = 10
 
@@ -110,6 +111,23 @@ PROTECTION_TIMEOUT_SEC = 10
 LIVE_MARKET_DATA_TYPE = 1
 QUOTE_WARMUP_SEC = 5.0
 DELAYED_MARKET_DATA_TYPES = (3, 4)
+
+# A streaming subscription that dies leaves its LAST values in the Ticker.
+# Nothing errors, nothing goes NaN — the numbers simply stop moving, and a
+# bot reading them cannot tell a quiet tape from a dead feed. Age is the only
+# thing that distinguishes them, so it is checked explicitly.
+#
+# Generous on purpose: an illiquid inverse ETF can legitimately go a minute
+# between prints without anything being wrong. This rejects a dead feed, not
+# a slow one.
+MAX_QUOTE_AGE_SEC = float(os.environ.get("MEDIK_ETF_MAX_QUOTE_AGE", 120))
+
+# A market this wide is not a market worth crossing. At $286 a position is
+# ~$70, so a 2% spread is $1.40 of instant cost against a $1.43 risk budget.
+MAX_SPREAD_PCT = float(os.environ.get("MEDIK_ETF_MAX_SPREAD_PCT", 2.0))
+
+# A last price far outside the current bid/ask is a stale or erroneous print.
+MAX_LAST_DEVIATION_PCT = 5.0
 
 # Holdings this strategy must LEAVE ALONE rather than adopt or refuse over.
 # Empty by default on purpose: an exemption should be typed out deliberately.
@@ -159,6 +177,21 @@ def log(msg: str) -> None:
 def live_enabled() -> bool:
     """Exact-match opt-in. Never inferred, never truthy-ish."""
     return os.environ.get(LIVE_ENV_VAR, "") == "true"
+
+
+def dry_run() -> bool:
+    """Run the WHOLE pipeline against live quotes, but send nothing.
+
+    This is the validation mode: real data, real scoring, real sizing, the
+    real authorization checklist, and a logged decision — with placeOrder
+    never called. It answers "would it have traded, and with what?" without
+    risking a dollar.
+
+    Exact-match, like the live gate. It fails toward NOT trading: anything
+    other than the exact string "true" leaves dry-run off, but dry-run off
+    still requires both live keys before an order can go out.
+    """
+    return os.environ.get(DRY_RUN_ENV_VAR, "") == "true"
 
 
 def risk_acknowledged() -> bool:
@@ -229,15 +262,48 @@ def usable_price(x) -> float:
     return v if v == v and v > 0 else 0.0        # v == v is False for NaN
 
 
-def read_quote(ticker, fallback_close: float = 0.0) -> tuple:
+def quote_age_seconds(ticker, now: datetime | None = None) -> float | None:
+    """Seconds since this ticker last updated, or None if it never has.
+
+    None is not zero. A ticker with no timestamp has produced no data at all,
+    which is a stronger failure than an old one — the caller must not read it
+    as "fresh".
+    """
+    stamp = getattr(ticker, "time", None)
+    if stamp is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return (now - stamp).total_seconds()
+    except (AttributeError, TypeError):
+        return None
+
+
+def read_quote(ticker, fallback_close: float = 0.0, now: datetime | None = None,
+               max_age_sec: float | None = None,
+               max_spread_pct: float | None = None) -> tuple:
     """(bid, ask, last, problem). `problem` is "" when the quote is usable.
 
-    Delayed data is REFUSED rather than used. If the entitlement lapses or TWS
-    is configured to fall back, IBKR quietly serves 15-minute-old prices with
-    no error — and a strategy on 5-minute bars would keep trading, sizing
-    stops and targets off a quote from three bars ago. Failing to trade is
-    recoverable; trading on stale prices is not.
+    Five ways a quote can be unusable, each refused explicitly:
+
+    DELAYED   IBKR can serve 15-minute-old prices with no error at all. A
+              5-minute strategy would keep trading, sizing stops off a quote
+              three bars stale.
+    MISSING   NaN or -1 in bid/ask/last.
+    STALE     The numbers are present and simply stopped moving, because the
+              feed died. Nothing errors; only the timestamp gives it away.
+    CROSSED   bid above ask is a data glitch, not an arbitrage.
+    WIDE      A spread this large is instant cost, not a market. At $286 of
+              equity a 2% spread on a $70 position is $1.40 against a $1.43
+              risk budget — the trade is lost before it starts.
+
+    Failing to trade is recoverable. Trading on bad prices is not.
     """
+    max_age_sec = MAX_QUOTE_AGE_SEC if max_age_sec is None else max_age_sec
+    max_spread_pct = MAX_SPREAD_PCT if max_spread_pct is None else max_spread_pct
+
     md = getattr(ticker, "marketDataType", None) or LIVE_MARKET_DATA_TYPE
     if md in DELAYED_MARKET_DATA_TYPES:
         return 0.0, 0.0, 0.0, (
@@ -251,8 +317,31 @@ def read_quote(ticker, fallback_close: float = 0.0) -> tuple:
         return 0.0, 0.0, 0.0, (
             f"no usable quote (bid={ticker.bid!r} ask={ticker.ask!r} "
             f"last={ticker.last!r} close={ticker.close!r})")
+
+    age = quote_age_seconds(ticker, now)
+    if age is None:
+        return 0.0, 0.0, 0.0, "quote has no timestamp — cannot prove it is live"
+    if age > max_age_sec:
+        return 0.0, 0.0, 0.0, (
+            f"STALE quote — last update {age:,.0f}s ago (limit {max_age_sec:,.0f}s); "
+            "a dead feed keeps returning its last values without erroring")
+
     if ask < bid:
         return 0.0, 0.0, 0.0, f"crossed quote (bid {bid:,.2f} > ask {ask:,.2f})"
+
+    spread_pct = (ask - bid) / ((ask + bid) / 2.0) * 100.0
+    if spread_pct > max_spread_pct:
+        return 0.0, 0.0, 0.0, (
+            f"spread {spread_pct:.2f}% exceeds {max_spread_pct:.2f}% — "
+            f"bid {bid:,.2f} ask {ask:,.2f}, not a tradeable market")
+
+    mid = (bid + ask) / 2.0
+    deviation = abs(last - mid) / mid * 100.0
+    if deviation > MAX_LAST_DEVIATION_PCT:
+        return 0.0, 0.0, 0.0, (
+            f"last {last:,.2f} is {deviation:.1f}% away from the "
+            f"{mid:,.2f} mid — stale or erroneous print")
+
     return bid, ask, last, ""
 
 
@@ -632,11 +721,13 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
     if top:
         log("top candidates: " + ", ".join(
             f"{c.symbol}={c.score:.0f}" for c in top))
-    for c in sorted(scores.values(), key=lambda x: -x.score)[:5]:
+    for c in sorted(scores.values(), key=lambda x: -x.score):
         detail = ", ".join(c.reasons) if c.signal == "TRADE" else "; ".join(c.rejections)
-        log(f"  {c.symbol:<5} ${c.price:>8.2f} 15m={c.trend_15m:<7} "
-            f"RSI={c.rsi:>5.1f} RVOL={c.rvol:>5.2f} score={c.score:>5.1f} "
-            f"{c.signal:<7} {detail}")
+        log(f"DATA | {c.symbol:<5} | price={c.price:>8.2f} | rvol={c.rvol:>5.2f} | "
+            f"rsi={c.rsi:>5.1f} | 15m={c.trend_15m:<7} | score={c.score:>5.1f} | "
+            f"{c.signal:<7} | {detail}")
+    for i, c in enumerate(ranked[:3], 1):
+        log(f"RANK | #{i} {c.symbol} | score={c.score:.1f}")
 
     # ---- manage an existing position
     if open_trade is not None:
@@ -664,16 +755,19 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
 
     # ---- look for a new entry
     if not ranked:
-        log("no qualifying setup — NO ORDER")
+        log("NO TRADE | reason=no qualifying setup among "
+            f"{len(scores)} scored symbols")
         return None
 
     best = ranked[0]
     try:
         sized = size_trade(best, state)
     except SizingRejected as exc:
-        log(f"{best.symbol}: {exc} — NO ORDER")
+        log(f"NO TRADE | reason=sizing | {best.symbol} | {exc}")
         return None
 
+    log(f"SIGNAL | BUY {sized.symbol} | score={best.score:.1f} | "
+        f"{', '.join(best.reasons)}")
     log(f"SELECTED {sized.symbol} score {best.score:.1f} "
         f"leverage {profile_for(sized.symbol).leverage}x — {', '.join(best.reasons)}")
     log(f"  allocation ${sized.notional:,.2f} "
@@ -692,7 +786,20 @@ def scan_once(ib, armed: bool, controls: SessionControls, ledger: TradeLedger,
         close_minutes=close_minutes(now.date()),
     )
     if not auth:
-        log(f"NO ORDER — failed checks: {', '.join(auth.failures)}")
+        log(f"RISK | FAIL | {sized.symbol} | failed={', '.join(auth.failures)}")
+        log(f"NO TRADE | reason=risk checks | {', '.join(auth.failures)}")
+        return None
+
+    log(f"RISK | PASS | {sized.symbol} | qty={sized.quantity} | "
+        f"entry=${sized.entry:,.2f} | stop=${sized.stop:,.2f} | "
+        f"target=${sized.target:,.2f} | max_loss=${sized.risk_dollars:,.2f}")
+
+    # DRY RUN stops here, AFTER every check has run and been logged. Placing
+    # it later would mean the decision was never really made; placing it
+    # earlier would mean the checks were never really tested.
+    if dry_run():
+        log(f"DRY RUN | would submit BUY {sized.quantity} {sized.symbol} "
+            f"@ ${sized.entry:,.2f} — NO ORDER SENT")
         return None
 
     # Authorised by the checklist alone. No interactive confirmation.
@@ -860,7 +967,11 @@ def main() -> int:
 
         for line in arming_lines:
             log(line)
-        log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
+        if dry_run():
+            log("AUTOMATIC TRADING: DRY RUN — full pipeline on live quotes, "
+                "NO ORDERS WILL BE SENT")
+        else:
+            log(f"AUTOMATIC TRADING: {'ENABLED' if armed else 'DISABLED'}")
         log(f"CAPITAL UTILIZATION: UP TO {MAX_CAPITAL_UTILIZATION:.0%}")
         log(f"MARKET DATA: streaming, type {LIVE_MARKET_DATA_TYPE} "
             f"(reqMktData snapshot=False; snapshots are a separate IBKR "

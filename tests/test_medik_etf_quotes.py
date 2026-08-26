@@ -8,6 +8,8 @@ TWS showed a live subscription. Confirmed 2026-08-24 with the probe.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import importlib.util
 import sys
 import types
@@ -31,11 +33,15 @@ def _live():
 NAN = float("nan")
 
 
+NOW = datetime(2026, 8, 26, 16, 0, tzinfo=timezone.utc)
+
+
 class Ticker:
     def __init__(self, bid=70.20, ask=70.22, last=70.21, close=69.90,
-                 marketDataType=1):
+                 marketDataType=1, age_sec=1.0):
         self.bid, self.ask, self.last, self.close = bid, ask, last, close
         self.marketDataType = marketDataType
+        self.time = None if age_sec is None else NOW - timedelta(seconds=age_sec)
 
 
 class Contract:
@@ -83,33 +89,33 @@ def test_the_or_zero_idiom_would_not_have_caught_nan():
 
 
 def test_a_good_quote_is_returned():
-    bid, ask, last, problem = _live().read_quote(Ticker())
+    bid, ask, last, problem = _live().read_quote(Ticker(), now=NOW)
     assert problem == ""
     assert (bid, ask, last) == pytest.approx((70.20, 70.22, 70.21))
 
 
 def test_last_falls_back_to_close_then_to_the_bar():
     live = _live()
-    _, _, last, problem = live.read_quote(Ticker(last=NAN))
+    _, _, last, problem = live.read_quote(Ticker(last=NAN), now=NOW)
     assert problem == "" and last == pytest.approx(69.90)
-    _, _, last, problem = live.read_quote(Ticker(last=NAN, close=NAN), 68.5)
+    _, _, last, problem = live.read_quote(Ticker(last=NAN, close=NAN), 68.5, now=NOW)
     assert problem == "" and last == pytest.approx(68.5)
 
 
 def test_a_missing_bid_or_ask_is_refused():
     live = _live()
-    assert "no usable quote" in live.read_quote(Ticker(bid=NAN))[3]
-    assert "no usable quote" in live.read_quote(Ticker(ask=NAN))[3]
+    assert "no usable quote" in live.read_quote(Ticker(bid=NAN), now=NOW)[3]
+    assert "no usable quote" in live.read_quote(Ticker(ask=NAN), now=NOW)[3]
 
 
 def test_no_price_at_all_is_refused():
-    problem = _live().read_quote(Ticker(NAN, NAN, NAN, NAN), 0.0)[3]
+    problem = _live().read_quote(Ticker(NAN, NAN, NAN, NAN), 0.0, now=NOW)[3]
     assert "no usable quote" in problem
 
 
 def test_a_crossed_quote_is_refused():
     """bid above ask is a data glitch, not an arbitrage."""
-    bid, ask, last, problem = _live().read_quote(Ticker(bid=70.30, ask=70.20))
+    bid, ask, last, problem = _live().read_quote(Ticker(bid=70.30, ask=70.20), now=NOW)
     assert "crossed quote" in problem
     assert (bid, ask, last) == (0.0, 0.0, 0.0)
 
@@ -121,7 +127,7 @@ def test_delayed_data_is_refused_even_when_prices_look_fine(md_type):
     A 5-minute strategy would keep trading, sizing stops off a quote three
     bars stale. Refusing costs a missed trade; accepting costs a wrong one.
     """
-    bid, ask, last, problem = _live().read_quote(Ticker(marketDataType=md_type))
+    bid, ask, last, problem = _live().read_quote(Ticker(marketDataType=md_type), now=NOW)
     assert "DELAYED" in problem
     assert (bid, ask, last) == (0.0, 0.0, 0.0)
 
@@ -130,13 +136,15 @@ def test_delayed_data_is_refused_even_when_prices_look_fine(md_type):
 def test_realtime_and_frozen_are_accepted(md_type):
     """Frozen (2) is the last live print, not a delayed feed — usable when the
     market is closed and honest about what it is."""
-    assert _live().read_quote(Ticker(marketDataType=md_type))[3] == ""
+    assert _live().read_quote(Ticker(marketDataType=md_type), now=NOW)[3] == ""
 
 
-def test_a_ticker_without_the_field_is_assumed_live():
+def test_a_ticker_without_the_marketdatatype_field_is_assumed_live():
+    """Absent marketDataType means live; absent TIME means unprovable."""
     class Bare:
         bid, ask, last, close = 70.20, 70.22, 70.21, 69.90
-    assert _live().read_quote(Bare())[3] == ""
+        time = NOW - timedelta(seconds=1)
+    assert _live().read_quote(Bare(), now=NOW)[3] == ""
 
 
 # ---------------------------------------------------------- QuoteFeed
@@ -234,3 +242,84 @@ def test_subscriptions_are_released_on_exit():
     src = open("examples/medik_etf_live.py").read()
     tail = src.split("    finally:")[-1]
     assert "feed.cancel_all()" in tail
+
+
+# ------------------------------------------- freshness, spread and sanity
+
+
+def test_a_dead_feed_is_caught_by_age_not_by_content():
+    """The failure this exists for: a subscription dies and the Ticker keeps
+    returning its LAST values. Nothing errors, nothing goes NaN — the numbers
+    simply stop moving. Only the timestamp can tell a quiet tape from a dead
+    feed."""
+    live = _live()
+    fresh = Ticker(age_sec=5)
+    stale = Ticker(age_sec=600)          # identical prices, older stamp
+    assert (fresh.bid, fresh.ask, fresh.last) == (stale.bid, stale.ask, stale.last)
+    assert live.read_quote(fresh, now=NOW)[3] == ""
+    assert "STALE" in live.read_quote(stale, now=NOW)[3]
+
+
+def test_the_age_limit_is_configurable():
+    live = _live()
+    t = Ticker(age_sec=180)
+    assert "STALE" in live.read_quote(t, now=NOW, max_age_sec=120)[3]
+    assert live.read_quote(t, now=NOW, max_age_sec=300)[3] == ""
+
+
+def test_a_quote_with_no_timestamp_is_refused_not_assumed_fresh():
+    """None is not zero: a ticker that never updated has produced no data."""
+    live = _live()
+    assert "no timestamp" in live.read_quote(Ticker(age_sec=None), now=NOW)[3]
+
+
+def test_a_naive_timestamp_is_read_as_utc_not_rejected():
+    live = _live()
+    t = Ticker()
+    t.time = t.time.replace(tzinfo=None)
+    assert live.read_quote(t, now=NOW)[3] == ""
+
+
+def test_quote_age_returns_none_rather_than_raising_on_junk():
+    live = _live()
+    class Junk:
+        time = "yesterday"
+    assert live.quote_age_seconds(Junk(), NOW) is None
+
+
+def test_a_wide_spread_is_refused():
+    """At $286 of equity a 2% spread on a $70 position is $1.40 of instant
+    cost against a $1.43 risk budget — lost before it starts."""
+    live = _live()
+    wide = Ticker(bid=69.00, ask=71.00, last=70.00)     # ~2.86%
+    bid, ask, last, problem = live.read_quote(wide, now=NOW)
+    assert "spread" in problem and (bid, ask, last) == (0.0, 0.0, 0.0)
+
+
+def test_a_normal_spread_passes():
+    live = _live()
+    assert live.read_quote(Ticker(bid=70.20, ask=70.22), now=NOW)[3] == ""
+
+
+def test_the_spread_limit_is_configurable():
+    live = _live()
+    t = Ticker(bid=69.00, ask=71.00, last=70.00)
+    assert live.read_quote(t, now=NOW, max_spread_pct=5.0)[3] == ""
+
+
+def test_a_last_price_far_from_the_mid_is_refused():
+    """A print well outside the current market is stale or erroneous."""
+    live = _live()
+    bad = Ticker(bid=70.20, ask=70.22, last=80.00)
+    assert "away from" in live.read_quote(bad, now=NOW)[3]
+
+
+def test_every_rejection_names_its_reason():
+    """A silent skip is indistinguishable from a bug at 6:45 in the morning."""
+    live = _live()
+    cases = [Ticker(marketDataType=3), Ticker(bid=NAN), Ticker(age_sec=999),
+             Ticker(bid=70.30, ask=70.20), Ticker(bid=69.0, ask=71.0, last=70.0),
+             Ticker(bid=70.20, ask=70.22, last=80.0), Ticker(age_sec=None)]
+    for t in cases:
+        problem = live.read_quote(t, now=NOW)[3]
+        assert problem and len(problem) > 20, problem
