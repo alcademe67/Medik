@@ -41,7 +41,7 @@ def _bars(symbol_seed: int, price: float, sessions: int = 12):
 
 def _accounted(r: SymbolResult) -> int:
     return (r.skips_whole_share + r.skips_v2 + r.skips_edge + r.skips_other
-            + len(r.trades))
+            + len(r.trades) + r.open_at_end)
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
@@ -77,6 +77,31 @@ def test_a_tiny_account_rejects_expensive_etfs_on_whole_shares():
     assert r.signals > 0, "fixture produced no signals; test proves nothing"
     assert r.skips_whole_share > 0
     assert len(r.trades) == 0
+
+
+def test_a_position_still_open_when_the_data_ends_is_counted(capsys):
+    """The one-short tally: data ending mid-position left a signal in no bucket.
+
+    Real runs printed "694 signals but 693 accounted for" because the final
+    signal's position never exited -- taken, but not a completed trade, and
+    not a rejection either. Reproduced here by truncating the data at a known
+    entry bar so the loop ends the moment the position opens.
+    """
+    bars, times = _bars(7, 68.0)
+    full = backtest_symbol("TEST", bars, times, 25_000.0, version="v2")
+    assert full.trades, "fixture produced no trades; test proves nothing"
+    # entry_time is the fill bar (signal bar + 1); ending there makes the
+    # signal bar the loop's last iteration, so the position cannot exit
+    cut = times.index(full.trades[0]["entry_time"])
+    r = backtest_symbol("TEST", bars, times, 25_000.0, end_idx=cut, version="v2")
+    assert r.open_at_end == 1
+    assert len(r.trades) == 0
+    assert _accounted(r) == r.signals
+    out = report([r], 25_000.0, "TEST")
+    printed = capsys.readouterr().out
+    assert "still open at end of data      1" in printed
+    assert "WARNING" not in printed, "accounting did not reconcile"
+    assert out["open_at_end"] == 1
 
 
 def test_the_report_prints_the_breakdown_even_with_no_trades(capsys):

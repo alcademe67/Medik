@@ -144,6 +144,7 @@ class SymbolResult:
     skips_v2: int = 0          # setup rejected by v2's extra filters
     skips_edge: int = 0        # target cannot clear the round-trip cost
     skips_other: int = 0       # any other sizing rejection
+    open_at_end: int = 0       # entered, but the data ended before the exit
     signals: int = 0           # score_candidate() said TRADE
     sessions: int = 0
 
@@ -174,6 +175,7 @@ class SymbolResult:
             "skips_v2": self.skips_v2,
             "skips_edge": self.skips_edge,
             "skips_other": self.skips_other,
+            "open_at_end": self.open_at_end,
             "win_rate": len(self.wins) / n if n else 0.0,
             "gross": gross, "commission": comm, "net": self.net,
             "avg_win": avg_win, "avg_loss": avg_loss,
@@ -330,6 +332,14 @@ def backtest_symbol(symbol: str, bars, times, equity: float,
         entry_i = i + 1
         open_trade = OpenTrade(symbol, sized.quantity, fill, stop, target, 0.0)
 
+    if open_trade is not None:
+        # The last signal opened a position the data never closed: it is in no
+        # skip bucket and produced no trade row, so without this the signal
+        # tally comes up one short. Counted only -- the unfinished trade stays
+        # out of res.trades because it has no exit, and inventing one would
+        # move P&L.
+        res.open_at_end += 1
+
     return res
 
 
@@ -371,6 +381,7 @@ def report(results: list[SymbolResult], equity: float, label: str) -> dict:
     v2_skips = sum(r.skips_v2 for r in results)
     edge_skips = sum(r.skips_edge for r in results)
     other_skips = sum(r.skips_other for r in results)
+    open_end = sum(r.open_at_end for r in results)
     signals = sum(r.signals for r in results)
     sessions = max((r.sessions for r in results), default=0)
 
@@ -415,13 +426,15 @@ def report(results: list[SymbolResult], equity: float, label: str) -> dict:
     print(f"    rejected, net edge vs cost     {edge_skips}")
     print(f"    rejected, other sizing         {other_skips}")
     print(f"    TAKEN                          {len(all_trades)}")
-    accounted = v2_skips + ws_skips + edge_skips + other_skips + len(all_trades)
+    print(f"    still open at end of data      {open_end}")
+    accounted = (v2_skips + ws_skips + edge_skips + other_skips
+                 + len(all_trades) + open_end)
     if accounted != signals:
         print(f"    WARNING: {signals} signals but {accounted} accounted for")
     return {"trades": len(all_trades), "net": net, "signals": signals,
             "whole_share_skips": ws_skips, "v2_skips": v2_skips,
             "edge_skips": edge_skips, "other_skips": other_skips,
-            "max_drawdown": maxdd}
+            "open_at_end": open_end, "max_drawdown": maxdd}
 
 
 # ===========================================================================
