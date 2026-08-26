@@ -462,6 +462,28 @@ reach a live order. IBKR also returns `"C123.45"` in the same field as a live
 price to mean "derived from the previous close" (and `"H"` for halted) —
 both are rejected rather than stripped and parsed.
 
+**2026-08-26 (laptop session) — the cpapi fix CONFLICTS with TWS on one
+username.** Logging into the local Client Portal Gateway (Firefox,
+12:30:11 PT) bumped TWS's session — TWS's own dialog said "EXISTING SESSION
+DETECTED", naming the gateway login's IP and timestamp. From that moment
+TWS's API wedged: `reqCurrentTime` answered while order/account requests
+hung forever, which froze the ETF bot at startup reconciliation. Clicking
+"Reconnect This Session" in TWS revived it and killed the gateway session
+in return. While both were briefly up, the gateway served quotes flagged
+`DB`/delayed (`marketDataType 3`) even as the MCP connector showed
+`REALTIME` for the same symbol in the same minute — the free feed's
+real-time seat stays with the other sessions. **Net: with one username
+there is NO configuration giving the bot both an order path (TWS) and a
+real-time quote path (gateway)** — socket real-time is 10089-blocked, and
+a gateway login takes TWS's session. The unattended run therefore exits at
+the quote-session preflight: safe, idle, correct. Unblocks, in order:
+(1) activate the second username `alcademe6767` (identity verification
+pending since 2026-07-23 — Client Portal → Message Center) and run the
+gateway on it while TWS keeps `alcademe67`; (2) pay for an API-entitled
+market-data subscription so the TWS socket itself serves real-time —
+verify with IBKR that the specific subscription extends API rights BEFORE
+paying, given the 10089 history; (3) accept the idle bot.
+
 ## COST ARITHMETIC — why activity is the enemy here (2026-08-26)
 
 Commission is `clamp($0.005/share, min $1.00, max 1% of value)`. At this
@@ -523,9 +545,12 @@ the backtester's own warning stands: that converts OOS into in-sample and
 no clean test remains. A new idea needs a fresh spec and a fresh test
 through this same harness before anyone calls it working.
 
-Footnote: several runs print "N signals but N−1 accounted for" — an
-off-by-one in the backtester's rejection-accounting display, not in the
-trade simulation; it does not move any verdict.
+Footnote: several runs printed "N signals but N−1 accounted for" — a
+signal whose position was still open when the data ran out landed in no
+bucket. Fixed 2026-08-26: counted as "still open at end of data" in the
+report. Display-only; the trade simulation was never affected (re-run
+output identical line-for-line apart from the accounting block) and no
+verdict moves.
 
 ## Account facts (verified, stable)
 
