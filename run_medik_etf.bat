@@ -24,6 +24,13 @@ set MEDIK_ETF_MODE=live
 set MEDIK_ETF_LIVE=true
 set LIVE_RISK_ACK=true
 
+REM --- quotes: the TWS socket cannot serve this account's real-time
+REM     feed (error 10089, licence boundary -- see CLAUDE.md). Quotes
+REM     come from the Client Portal Gateway instead; if it is not
+REM     running and logged in at https://localhost:5000 the bot exits
+REM     at preflight rather than trading on nothing.
+set MEDIK_ETF_QUOTE_SOURCE=cpapi
+
 if not exist logs mkdir logs
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set STAMP=%%I
 set LOGFILE=logs\medik_etf_%STAMP%.log
