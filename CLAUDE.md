@@ -417,6 +417,75 @@ connector, so Claude cannot clear them.
   Locked by `tests/test_service_config.py`. Turn it back on only for a
   strategy re-validated through `net_of_commission.py`.
 
+## MARKET DATA — the licence boundary (settled 2026-08-26, read before debugging quotes)
+
+**The account HAS real-time US data. The TWS socket API cannot use it.** This
+took most of a day to establish; do not re-derive it.
+
+`US Real-Time Non Consolidated Streaming Quotes` is active on U26953060, fee
+waived (Client Portal shows six subscriptions, **Total USD 0**). Verified
+REALTIME through the IBKR **Client Portal Web API** for SPY (ARCA), TQQQ
+(NASDAQ) and SNXX (BATS) — all three networks the ETF universe spans.
+
+Through the **TWS socket API** the same symbols return **error 10089:
+"Requested market data requires additional subscription FOR API"**. That
+wording is literal: IBKR licenses this free feed for its own platforms (TWS,
+mobile, Client Portal) and treats the socket API as third-party
+redistribution. Live prices can therefore be on screen in TWS while the API
+is refused. **No setting grants API rights to a platform-only feed** — an
+earlier version of `mktdata_probe.py` claimed one existed, which was wrong
+and sent the owner hunting for a toggle that does not exist.
+
+Tested and ruled out, so nobody repeats it:
+
+| hypothesis | result |
+|---|---|
+| snapshot vs streaming | both fail at type 1 (`reqTickers` is snapshot, and is *also* separately entitled) |
+| direct venue routing (IEX/BATS/ARCA/NYSE/ISLAND) | **all fail identically**, each naming the PRIMARY exchange — IBKR resolves past the requested venue |
+| subscription missing | no: active, fee waived, Total USD 0 |
+| delayed (type 3) | works — and `read_quote()` REFUSES it on purpose |
+| historical (`reqHistoricalData`) | works, entitled separately — which is why bars load while quotes fail |
+
+**The fix, already built:** `ibkr/cpapi.py` + `MEDIK_ETF_QUOTE_SOURCE=cpapi`.
+Quotes from the Client Portal Web API; orders and historical bars still via
+TWS. Needs IBKR's **Client Portal Gateway** running locally (separate
+download; `bin\run.bat root\conf.yaml`; log in once at
+https://localhost:5000). That session is browser-authenticated and expires
+more often than TWS's weekly re-login, so `auth_status()` is checked at
+startup and a dead session exits at preflight rather than trading on nothing.
+
+`CpQuote` is duck-typed to ib_async's `Ticker` so `read_quote()` applies the
+SAME gates to both providers. Field 6509 maps onto the TWS `marketDataType`
+numbering; an unknown or absent availability code maps to **delayed, not
+real-time**, because a quote whose origin cannot be established must never
+reach a live order. IBKR also returns `"C123.45"` in the same field as a live
+price to mean "derived from the previous close" (and `"H"` for halted) —
+both are rejected rather than stripped and parsed.
+
+## COST ARITHMETIC — why activity is the enemy here (2026-08-26)
+
+Commission is `clamp($0.005/share, min $1.00, max 1% of value)`. At this
+account's position sizes the **$1.00 minimum binds**, so every round trip
+costs **$2.00** regardless of symbol. Risk budget is 0.5% of $286 = **$1.43**.
+
+**Cost is 1.40× the entire risk budget per round trip.** At a 1.5R target a
+winner nets $0.15 and a loser costs $3.43 — **break-even needs a 96% win
+rate**. This is arithmetic, not strategy, and it is the same force that made
+the gate (−8.3%) and pullback (−35.9%) strategies lose.
+
+| equity | risk/trade | rt cost | cost/R | breakeven win% |
+|---|---|---|---|---|
+| $286 | $1.43 | $2.00 | 1.40 | **96% — impossible** |
+| $1,000 | $5.00 | $2.00 | 0.40 | 56% |
+| $2,000 | $10.00 | $2.00 | 0.20 | 48% — viable |
+| $3,000 | $15.00 | $2.00 | 0.13 | 45% — viable |
+
+Intraday momentum becomes mathematically possible around **$2,000**. Below
+that, no entry rule, score or exit overcomes the cost floor. Three trades a
+day at $286 is $126/month in commissions — 44% of the account per month.
+State this whenever "make it more active" comes up; the owner has heard it
+and may still choose to proceed, which is their call.
+
 ## Account facts (verified, stable)
 
 - **The login manages TWO accounts (since 2026-08-24): U26953060 (funded,
