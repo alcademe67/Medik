@@ -56,8 +56,17 @@ MD_TYPES = {
     4: "delayed-frozen",
 }
 
-# Error codes that mean "you may not have this data", as opposed to noise.
-ENTITLEMENT_CODES = {10089, 10090, 10091, 10167, 10168, 10197, 354, 162}
+# Codes meaning "you may not have this data".
+ENTITLEMENT_CODES = {10089, 10090, 10091, 10168, 10197, 354, 162}
+
+# 10167 -- "not subscribed, displaying delayed market data" -- is a FAILURE
+# when real-time was asked for and a STATEMENT OF FACT when delayed was. The
+# TQQQ run showed why the distinction matters: delayed prices came back
+# correctly, 10167 was counted as an entitlement failure anyway, every row
+# read "no data", and the verdict became "no quote path returned data. Check
+# that the market is open" -- while the market was open and quotes were on
+# the screen two lines above.
+DELAYED_FALLBACK_CODE = 10167
 # Codes IBKR sends as status, not failure.
 BENIGN_CODES = {2104, 2106, 2107, 2108, 2119, 2158, 2100, 2103, 2105, 2157}
 
@@ -92,15 +101,24 @@ class ErrorLog:
         return out
 
 
-def report_errors(errors) -> bool:
-    """Print errors, return True if any looked like an entitlement problem."""
+def report_errors(errors, delayed_requested: bool = False) -> bool:
+    """Print errors, return True if any was a real entitlement failure.
+
+    `delayed_requested` reclassifies 10167: asking for delayed data and being
+    told you are getting delayed data is the request succeeding, not failing.
+    """
     entitlement = False
     for reqId, code, msg in errors:
         if code in BENIGN_CODES:
             continue
-        flag = "  <-- ENTITLEMENT" if code in ENTITLEMENT_CODES else ""
-        entitlement = entitlement or code in ENTITLEMENT_CODES
-        print(f"      ERROR {code} (reqId {reqId}): {msg}{flag}")
+        if code == DELAYED_FALLBACK_CODE and delayed_requested:
+            print(f"      note {code} (reqId {reqId}): {msg}  "
+                  "<-- expected, delayed was requested")
+            continue
+        bad = code in ENTITLEMENT_CODES or code == DELAYED_FALLBACK_CODE
+        entitlement = entitlement or bad
+        print(f"      ERROR {code} (reqId {reqId}): {msg}"
+              + ("  <-- ENTITLEMENT" if bad else ""))
     return entitlement
 
 
@@ -117,19 +135,21 @@ def show(ticker) -> bool:
     return usable
 
 
-def probe_streaming(ib, log, contract, wait: float) -> bool:
+def probe_streaming(ib, log, contract, wait: float,
+                    delayed_requested: bool = False) -> bool:
     """reqMktData(snapshot=False) -- what the free streaming feed covers."""
     print("    STREAMING  reqMktData(genericTickList='', snapshot=False)")
     ticker = ib.reqMktData(contract, "", False, False)
     ib.sleep(wait)
     usable = show(ticker)
-    entitlement = report_errors(log.take())
+    entitlement = report_errors(log.take(), delayed_requested)
     ib.cancelMktData(contract)
     ib.sleep(0.2)
     return usable and not entitlement
 
 
-def probe_snapshot(ib, log, contract, wait: float) -> bool:
+def probe_snapshot(ib, log, contract, wait: float,
+                   delayed_requested: bool = False) -> bool:
     """reqTickers() -- snapshot=True. This is what the ETF bot calls today."""
     print("    SNAPSHOT   reqTickers()  [snapshot=True — the bot's current call]")
     try:
@@ -141,11 +161,12 @@ def probe_snapshot(ib, log, contract, wait: float) -> bool:
     usable = show(tickers[0]) if tickers else False
     if not tickers:
         print("      no ticker returned")
-    entitlement = report_errors(log.take())
+    entitlement = report_errors(log.take(), delayed_requested)
     return usable and not entitlement
 
 
-def probe_historical(ib, log, contract, wait: float) -> bool:
+def probe_historical(ib, log, contract, wait: float,
+                     delayed_requested: bool = False) -> bool:
     """The bot's other data call, entitled separately from quotes."""
     print("    HISTORICAL reqHistoricalData(5 mins, TRADES, useRTH=True)")
     try:
@@ -159,7 +180,7 @@ def probe_historical(ib, log, contract, wait: float) -> bool:
         return False
     print(f"      {len(bars)} bars"
           + (f", last close {bars[-1].close:,.2f} at {bars[-1].date}" if bars else ""))
-    entitlement = report_errors(log.take())
+    entitlement = report_errors(log.take(), delayed_requested)
     return bool(bars) and not entitlement
 
 
@@ -212,9 +233,13 @@ def main() -> int:
             ib.reqMarketDataType(md_type)
             ib.sleep(0.5)
             log.take()
-            results[(md_type, "streaming")] = probe_streaming(ib, log, contract, args.wait)
-            results[(md_type, "snapshot")] = probe_snapshot(ib, log, contract, args.wait)
-            results[(md_type, "historical")] = probe_historical(ib, log, contract, args.wait)
+            delayed = md_type in (3, 4)
+            results[(md_type, "streaming")] = probe_streaming(
+                ib, log, contract, args.wait, delayed)
+            results[(md_type, "snapshot")] = probe_snapshot(
+                ib, log, contract, args.wait, delayed)
+            results[(md_type, "historical")] = probe_historical(
+                ib, log, contract, args.wait, delayed)
 
         if args.exchanges:
             # Only meaningful if SMART failed: a non-consolidated feed carries
@@ -260,24 +285,28 @@ def main() -> int:
             print("  the quote call — re-check reqHistoricalData above, and which")
             print("  symbols actually failed.")
         elif not live_stream and results.get((3, "streaming")):
-            print("VERDICT: no real-time US equity subscription on this account.")
-            print("  Type 1 fails for BOTH streaming and snapshot; type 3")
-            print("  (delayed) works; historical works. Historical data is")
-            print("  entitled separately, which is why it succeeds.")
+            print("VERDICT: no real-time data through the API; delayed works.")
             print()
-            print("  There is NO 'enable API access' setting. A market-data")
-            print("  subscription entitles TWS and the API identically -- if")
-            print("  TWS shows real-time prices, the API gets them too. So this")
-            print("  is not a configuration problem to solve in code or in TWS.")
+            print("  If direct-venue routing was also tried and ALSO failed with")
+            print("  the SAME error naming the PRIMARY exchange, then routing is")
+            print("  not the variable and the account simply lacks API rights to")
+            print("  real-time data for these symbols.")
             print()
-            print("  The subscription has to be ADDED in Client Portal:")
-            print("    Settings > Account Settings > Market Data Subscriptions")
-            print("  Check the CURRENT subscriptions list, not the available-to-add")
-            print("  list -- 'Fee Waived' next to an offer is a price, not proof")
-            print("  that it is active.")
+            print("  Note the exact wording of error 10089: 'requires additional")
+            print("  subscription FOR API'. IBKR's free")
+            print("  'US Real-Time Non Consolidated Streaming Quotes' is licensed")
+            print("  for IBKR's own platforms -- TWS, mobile, Client Portal -- and")
+            print("  NOT for API redistribution. So it can show live prices on")
+            print("  screen while the API is refused, which looks like a bug and")
+            print("  is a licence boundary.")
             print()
-            print("  Also check Market Data Subscriber Status: the free and")
-            print("  low-cost US feeds are NON-PROFESSIONAL only.")
+            print("  CONFIRM IT: put the symbol in a TWS watchlist. Live ticking")
+            print("  prices in TWS while the API is refused proves the split.")
+            print()
+            print("  There is no setting that grants API rights to a")
+            print("  platform-only feed. Real-time API data needs a PAID")
+            print("  subscription, added in Client Portal > Settings >")
+            print("  Market Data Subscriptions.")
         else:
             print("VERDICT: no quote path returned data. Check that the market is")
             print("  open, then read the per-request errors above.")
