@@ -26,7 +26,16 @@ this repo or via connected IBKR tools. They are enforced in code by
 2. **Minimum risk/reward** — 1:3 for the gate strategy (target derived from
    stop distance) or 1:2 for the pullback strategy, where the target is the
    *actual* recent swing-high resistance rather than a derived multiple
-   (adopted 2026-08-04, see rule 8). Either way the target must clear its
+   (adopted 2026-08-04, see rule 8).
+   **2a. EXCEPTION (owner decision, 2026-08-27) — manual swing drafts only:**
+   for 1-5 day ETF swing tickets that Claude DRAFTS and the owner personally
+   clicks in TWS, the owner accepts **R:R ≥ 1:1 measured against a fixed
+   −2.5% stop**, and single-position sizing up to ~90% of cash (superseding
+   the 20% cap for these hand-clicked trades). Scope is exactly that: drafts
+   with a human tap. The automated bot's gates and every other use of rules
+   1/1b/2 are unchanged. Provenance: the owner's stated style — hold days,
+   take $10-20, rotate — after hearing the cost arithmetic and the negative
+   swing backtests; recorded, not endorsed by any new test. Either way the target must clear its
    required R:R or the trade doesn't fire — `strategy.risk.size_position`
    enforces this whether the target is derived or explicitly given.
 3. **Multi-indicator confirmation required (gate strategy).** A trade
