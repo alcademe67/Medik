@@ -630,6 +630,30 @@ report. Display-only; the trade simulation was never affected (re-run
 output identical line-for-line apart from the accounting block) and no
 verdict moves.
 
+## MEDIK SWING VERDICT (2026-08-27) — owner's 1-5 day rotation style: RED
+
+The owner asked for their stated style — hold an ETF 1-5 days, take
+$10-20, rotate, fixed −2.5% stop, accept 1:1 to the prior swing high —
+to be built and tested. Built as `strategy/medik_swing.py` (imports the
+pullback structure checks) and `backtest/medik_swing_bt.py` (single
+rotating position, next-open fills, stop-first, real commissions,
+spread+slippage). 5 years of real IBKR daily bars, 12 ETFs, includes the
+2022 bear.
+
+| window | trades | win% | PF | net @ $286 | maxDD |
+|---|---|---|---|---|---|
+| full 5y | 177 | 32.8% | 0.44 | **−$258.54 (−90.3%)** | 90.7% |
+| OOS (final 40%) | 88 | 40.9% | 0.78 | **−$94.22 (−32.9%)** | 40.3% |
+| QQQ buy&hold same window | 1 | — | — | **+$258.50 (+90.3%)** | — |
+
+Cause, visible in the exit ledger (93 stops / 41 targets / 43 time-outs):
+the −2.5% stop sits INSIDE the daily noise of the leveraged funds the
+R:R ranking preferentially selects, so it fires on nothing 53% of the
+time; 1:1 geometry with a ~33% win rate is negative before the $275.88
+of commissions. **Do not arm; do not retune the stop/target against this
+window** — the OOS is burned the moment it tunes parameters. Any new
+variant needs a fresh spec and, ideally, data this window hasn't judged.
+
 ## Account facts (verified, stable)
 
 - **The login manages TWO accounts (since 2026-08-24): U26953060 (funded,
