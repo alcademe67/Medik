@@ -420,6 +420,15 @@ connector, so Claude cannot clear them.
 - **Egress blocks a lot of the web.** Confirmed 403: Yahoo Finance /
   yfinance, Wikipedia, humbledtrader.com. Market data must come from the
   IBKR connector. WebSearch works and is the tool for news vetoes.
+- **Tailscale route to the owner's TWS exists but is policy-blocked**
+  (2026-08-29): `scripts/tailscale_up.sh` + `examples/tws_tunnel.py`, full
+  runbook `docs/tailscale.md`. The client builds via `proxy.golang.org`
+  (`pkgs.tailscale.com` is 403) and the daemon runs, but the join dies at
+  `CONNECT controlplane.tailscale.com → 403` until the owner allows
+  `*.tailscale.com` in the Claude environment's network policy
+  (claude.ai/code → environment → Network access: Custom, keep the default
+  package managers checked). Once allowed: run the script, then the tunnel
+  puts TWS at `127.0.0.1:7496` so every script works unchanged.
 - **Subagents must never call sleep/wait/Monitor** — foreground waiting is
   blocked and hangs the agent until it dies. Tell them explicitly to retry
   failed calls immediately with no pause.
@@ -488,7 +497,10 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
   (`lowfreq.py`, `run_lowfreq_comparison.py`)
 - `examples/` — runnable entry points (`connect_test.py`, `run_scan.py`,
   `run_backtest.py`, `manage_open_positions.py`, `check_risk_limits.py`,
-  `show_journal.py`, `review_pending_orders.py`, `fetch_bar_cache.py`)
+  `show_journal.py`, `review_pending_orders.py`, `fetch_bar_cache.py`,
+  `tws_tunnel.py`: forward local 7496 to TWS over the tailnet)
+- `scripts/` — ops shell scripts for the Claude cloud container
+  (`tailscale_up.sh`: build/join Tailscale; see `docs/tailscale.md`)
 - `service/` — Windows background service: `supervisor.py` (main loop),
   `pipeline.py` (shared scan-score-risk-act cycle, mode-aware),
   `config.py`, `health.py`, `alerts.py`, `market_hours.py`,
@@ -500,7 +512,7 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
 - `docs/` — operating docs: `RESTART_PROMPT.md` (session handoff),
   `SETUP_WINDOWS.md` (service install), `core-holding-runbook.md`,
   `backtest-verdict.md` (what was tested + how to reproduce it),
-  `mcp-servers.md`
+  `mcp-servers.md`, `tailscale.md` (cloud-session route to TWS)
 - `data/` — cached daily bars, **gitignored** (README tracked)
 - `reports/` — generated report output, **gitignored** (README tracked);
   contains live balances, which is why it stays out of git
