@@ -5,7 +5,7 @@ In a Claude cloud session, tailscaled runs in userspace-networking mode
 (scripts/tailscale_up.sh), so tailnet peers are reachable only via its SOCKS5
 listener — and ib_async has no SOCKS support. This script bridges the gap:
 
-    python examples/tws_tunnel.py DESKTOP-ABC123 &
+    python examples/tws_tunnel.py &      # defaults to the owner's laptop
     python examples/tws_status.py        # works unchanged
 
 It listens on 127.0.0.1:7496 and forwards each connection through SOCKS5
@@ -21,10 +21,15 @@ run anywhere, no broker or SOCKS packages needed. See docs/tailscale.md.
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import struct
 import sys
 import threading
+
+# The owner's laptop on the tailnet (node registered 2026-08-29). Its stable
+# tailnet IP is 100.92.227.2 — use that if MagicDNS is ever unavailable.
+DEFAULT_TWS_HOST = "mediklaptop.tailf5d0d4.ts.net"
 
 SOCKS_REPLY = {
     0x00: "succeeded",
@@ -120,7 +125,9 @@ def _serve_one(client: socket.socket, peer: str, args: argparse.Namespace) -> No
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("host", help="tailnet name or 100.x IP of the machine running TWS")
+    ap.add_argument("host", nargs="?", default=None,
+                    help="tailnet name or 100.x IP of the machine running TWS "
+                         "(default: $TWS_TAILNET_HOST, else the owner's laptop)")
     ap.add_argument("--port", type=int, default=7496, help="remote TWS port (default 7496 live)")
     ap.add_argument("--listen", type=int, default=None,
                     help="local listen port (default: same as --port)")
@@ -128,6 +135,8 @@ def main() -> int:
     ap.add_argument("--socks", default="127.0.0.1:1055",
                     help="tailscaled SOCKS5 address (default 127.0.0.1:1055)")
     args = ap.parse_args()
+    if args.host is None:
+        args.host = os.environ.get("TWS_TAILNET_HOST") or DEFAULT_TWS_HOST
     if args.paper:
         args.port = 7497
     if args.listen is None:

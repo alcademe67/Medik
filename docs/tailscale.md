@@ -69,6 +69,9 @@ URL to approve in a browser — fine for a one-off, annoying every session.
 1. Install Tailscale (<https://tailscale.com/download>), sign in to the same
    tailnet. Note the machine name (`tailscale status`, or the admin console
    Machines page) — that's the name passed to `tws_tunnel.py`.
+   **DONE 2026-08-29**: the laptop joined as **`mediklaptop.tailf5d0d4.ts.net`**
+   (tailnet IP `100.92.227.2`) — baked in as `tws_tunnel.py`'s default host
+   (`TWS_TAILNET_HOST` overrides it if the machine is ever renamed).
 2. Share the TWS socket with the tailnet **via `tailscale serve`** (admin
    PowerShell on the Windows machine):
 
@@ -95,9 +98,10 @@ URL to approve in a browser — fine for a one-off, annoying every session.
 ACL is allow-all. In the admin console (Access Controls), restrict the cloud
 node's tag to the one port it needs, e.g.:
 
+    "hosts": {"mediklaptop": "100.92.227.2"},
     "acls": [
       {"action": "accept", "src": ["autogroup:member"], "dst": ["*:*"]},
-      {"action": "accept", "src": ["tag:medik-cloud"], "dst": ["windows-machine-name:7496"]}
+      {"action": "accept", "src": ["tag:medik-cloud"], "dst": ["mediklaptop:7496"]}
     ]
 
 (with `"tagOwners": {"tag:medik-cloud": ["autogroup:admin"]}`, and the first
@@ -108,24 +112,26 @@ tradeoff, not a default.
 
 ## Per-session use (after setup)
 
-    bash scripts/tailscale_up.sh                     # build if needed, join
-    python examples/tws_tunnel.py <windows-name> &   # 127.0.0.1:7496 -> tailnet
-    python examples/tws_status.py                    # any script, unchanged
+    bash scripts/tailscale_up.sh          # build if needed, join
+    python examples/tws_tunnel.py &       # 127.0.0.1:7496 -> mediklaptop:7496
+    python examples/tws_status.py         # any script, unchanged
 
 `tws_tunnel.py --paper` forwards 7497 instead for the paper account.
 `scripts/tailscale_up.sh status` shows daemon/tailnet state. TWS must be open
 and logged in on the Windows machine, as always.
 
-## Status (2026-08-29)
+## Status (2026-08-29, evening)
 
-Everything container-side is proven: the client (v1.102.3) builds via the Go
-module proxy in a few minutes, `tailscaled` runs in userspace mode and
-correctly routes through the session's egress proxy, and the tunnel's
-forwarding logic passes a local SOCKS5 round-trip test. The join itself stops
-at the network policy (step 1) — until an environment allows
-`*.tailscale.com`, `tailscale up` fails with `403 Forbidden` from the egress
-proxy. Steps 2–4 have not been exercised yet; expect first-run friction in
-`tailscale serve` syntax and the ACL.
+Container side is proven: the client (v1.102.3) builds via the Go module
+proxy in a few minutes, `tailscaled` runs in userspace mode and routes
+through the session's egress proxy, and the tunnel's forwarding logic passes
+a local SOCKS5 round-trip test. The owner applied the network-policy fix
+(step 1) the same day — note **a policy edit reaches only sessions started
+after it**; a running container keeps its boot-time policy (retested, still
+403 in the pre-change session). The tailnet is `tailf5d0d4.ts.net`; the
+laptop is joined (see §3). Still to verify end-to-end: a fresh session's
+join, `tailscale serve` on the laptop, TS_AUTHKEY, and the ACL — expect
+first-run friction in the serve syntax.
 
 ## Troubleshooting
 

@@ -420,15 +420,18 @@ connector, so Claude cannot clear them.
 - **Egress blocks a lot of the web.** Confirmed 403: Yahoo Finance /
   yfinance, Wikipedia, humbledtrader.com. Market data must come from the
   IBKR connector. WebSearch works and is the tool for news vetoes.
-- **Tailscale route to the owner's TWS exists but is policy-blocked**
-  (2026-08-29): `scripts/tailscale_up.sh` + `examples/tws_tunnel.py`, full
-  runbook `docs/tailscale.md`. The client builds via `proxy.golang.org`
-  (`pkgs.tailscale.com` is 403) and the daemon runs, but the join dies at
-  `CONNECT controlplane.tailscale.com → 403` until the owner allows
-  `*.tailscale.com` in the Claude environment's network policy
-  (claude.ai/code → environment → Network access: Custom, keep the default
-  package managers checked). Once allowed: run the script, then the tunnel
-  puts TWS at `127.0.0.1:7496` so every script works unchanged.
+- **Tailscale route to the owner's TWS** (built 2026-08-29):
+  `scripts/tailscale_up.sh` joins the tailnet (the client builds via
+  `proxy.golang.org`; `pkgs.tailscale.com` is 403), then
+  `examples/tws_tunnel.py` puts TWS at `127.0.0.1:7496` so every script
+  works unchanged — full runbook `docs/tailscale.md`. The owner allowed
+  `*.tailscale.com` in the environment network policy the same day, but
+  **a policy edit reaches only sessions started after it** — a running
+  container keeps its boot-time policy (verified: still 403 after the
+  change). Laptop node: `mediklaptop.tailf5d0d4.ts.net` (100.92.227.2),
+  the tunnel's default host. Laptop-side `tailscale serve`, TS_AUTHKEY
+  and the ACL were still unverified as of 2026-08-29 — check the doc's
+  Status section before assuming end-to-end works.
 - **Subagents must never call sleep/wait/Monitor** — foreground waiting is
   blocked and hangs the agent until it dies. Tell them explicitly to retry
   failed calls immediately with no pause.
