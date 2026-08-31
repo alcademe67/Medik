@@ -506,10 +506,33 @@ Account Configuration/Permissions) asking IBKR to create the second
 username or enable the missing Users & Access Rights section — the
 self-service path IBot describes does not exist on either account.
 
+## ACTIVATION PROTOCOL (owner order, 2026-08-31 — SUPERSEDES the runbook below)
+
+The owner has authorized REAL-MONEY automated ETF trading, gated on the
+secondary username and an EXPLICIT activation phrase. Until IBKR approves
+`alcademe0209`: do NOT submit ETF orders, do NOT enable the `MEDIK ETF AUTO
+TRADER` scheduled task (it is deliberately DISABLED — leave it so), do NOT
+start the Client Portal Gateway, no test orders, no account changes, no
+strategy/risk parameter changes. Allowed meanwhile: read-only verification
+(TWS config, code, live config, API config, market-data requirements, risk
+controls), technical bug fixes, and keeping everything ready.
+
+When the username flips to Active: do NOT activate anything. Report
+"SECONDARY USERNAME APPROVED", then verify WITHOUT placing orders:
+(1) alcademe67 → TWS, (2) alcademe0209 → gateway, (3) both sessions
+coexist, (4) correct account U26953060 visible, (5) ETF market data
+available — note the account-level snapshot/equity-minimum issue may still
+force delayed data, (6) live API connection works, (7) risk controls pass,
+(8) strategy preflight passes, (9) scheduled task ready (still disabled).
+Then report "MEDIK ETF AUTO TRADER READY FOR LIVE ACTIVATION" and WAIT.
+Only the owner's exact phrase "ACTIVATE MEDIK ETF LIVE" authorizes
+enabling the task / arming the engine, and the full live preflight runs
+before any first order. The order engine stays OFF until that phrase.
+
 **SECOND USERNAME EXISTS: `alcademe0209` — status PENDING as of
-2026-08-26** (owner's report; IBKR to confirm shortly). FINAL ACTIVATION
-STEP, once IBKR confirms it — this is the whole unblock sequence and
-none of it is code:
+2026-08-26** (owner's report). Historical runbook below for reference —
+the PROTOCOL ABOVE governs where they differ (notably: nothing activates
+automatically anymore):
 
 1. **Log the Client Portal Gateway in as `alcademe0209`** — never
    `alcademe67` — at https://localhost:5000 (start it with
