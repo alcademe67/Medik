@@ -93,6 +93,12 @@ ETF_PROFILES: dict[str, ETFProfile] = {
     "ERX": ETFProfile("ERX", 2.0, 0.1, "energy"),
     "ERY": ETFProfile("ERY", 2.0, -0.1, "energy"),
     "XLE": ETFProfile("XLE", 1.0, 0.05, "energy"),
+    # precious metals — unleveraged, liquid, and effectively uncorrelated to
+    # the Nasdaq (added 2026-09-02 at the owner's request). Their OWN group
+    # so the one-per-correlated-group rule treats gold and silver as distinct
+    # bets from each other and from the tech names.
+    "GLD": ETFProfile("GLD", 1.0, 0.0, "gold"),
+    "SLV": ETFProfile("SLV", 1.0, 0.0, "silver"),
 }
 
 

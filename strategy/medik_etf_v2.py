@@ -49,6 +49,7 @@ V2_UNIVERSE = [
     "QQQ", "SPY", "IWM",             # broad market
     "SMH", "XLK", "XLF", "XLE",      # liquid sectors
     "DIA", "VTI",                    # additional liquid broad funds
+    "GLD", "SLV",                    # precious metals (owner request 2026-09-02)
 ]
 
 # ---- v2 thresholds (stricter than v1; never loosened to force a trade)
