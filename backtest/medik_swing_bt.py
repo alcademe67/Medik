@@ -53,9 +53,9 @@ def _friction(symbol: str, price: float) -> float:
     return price * ((spread_bps(symbol) / 2 + SLIPPAGE_BPS) / 10_000)
 
 
-def load(data_dir: Path) -> dict[str, pd.DataFrame]:
+def load(data_dir: Path, symbols=None) -> dict[str, pd.DataFrame]:
     frames = {}
-    for symbol in SWING_UNIVERSE:
+    for symbol in (symbols or SWING_UNIVERSE):
         path = data_dir / f"{symbol}.json"
         if not path.exists():
             continue
@@ -212,6 +212,7 @@ def report(label: str, r: dict, equity: float) -> None:
 def main() -> None:
     data_dir = None
     equity = 286.15
+    symbols = None
     args = sys.argv[1:]
     while args:
         arg = args.pop(0)
@@ -220,12 +221,16 @@ def main() -> None:
         elif arg.startswith("--equity"):
             value = arg.split("=", 1)[1] if "=" in arg else args.pop(0)
             equity = float(value)
+        elif arg == "--symbols":
+            symbols = []
+            while args and not args[0].startswith("--"):
+                symbols.append(args.pop(0))
         else:
             print(f"unknown option {arg!r}"); return
     if data_dir is None:
         print("--data <dir> is required"); return
 
-    frames = load(data_dir)
+    frames = load(data_dir, symbols)
     if not frames:
         print("no data files found"); return
     print(f"loaded {len(frames)} symbols from {data_dir}")
