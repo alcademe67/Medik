@@ -86,11 +86,14 @@ class RestartPolicy:
     window_sec: int = 1800          # ...this rolling 30-minute window -> then escalate
     alert_cooldown_sec: int = 1800  # 30 min between repeats of the same human-needed alert
     equity_threshold: float = 500.0 # IBKR real-time-data minimum
+    max_reauth: int = 3             # /iserver/reauthenticate tries before it's a human's job
+    reauth_cooldown_sec: int = 30   # reauth is async; give it a beat between tries
 
 
 @dataclass(frozen=True)
 class SupervisorState:
     restart_times: tuple = ()               # unix seconds of recent restarts
+    reauth_times: tuple = ()                # unix seconds of recent reauthenticate tries
     last_login_alert: float | None = None
     last_flapping_alert: float | None = None
     crossed_announced: bool = False         # $500 announced once until it dips back
@@ -163,11 +166,33 @@ def run_cycle(health: GatewayHealth, state: SupervisorState, now: float,
         return state, actions
 
     if decision == ALERT_LOGIN:
+        # Try to recover WITHOUT a human first. /iserver/reauthenticate revives
+        # the brokerage session as long as the browser SSO cookie is still valid
+        # — which covers the common mid-day session drop. Only a full SSO expiry
+        # (~daily) or a reboot genuinely needs the owner's browser login, and
+        # that is the sole thing this cannot do (it never handles a password).
+        recent_reauth = prune(state.reauth_times, now, policy.window_sec)
+        in_cooldown = bool(recent_reauth) and (now - max(recent_reauth)) < policy.reauth_cooldown_sec
+        if len(recent_reauth) < policy.max_reauth and not in_cooldown:
+            recovered = deps.reauthenticate()
+            state = replace(state, reauth_times=recent_reauth + (now,))
+            if recovered:
+                actions.append("reauthenticate_ok")
+                # session is back — clear the reauth history and let the next
+                # cycle fall through to TICKLE
+                state = replace(state, reauth_times=(), last_login_alert=None)
+            else:
+                actions.append("reauthenticate_try")
+            return state, actions
+        if in_cooldown:
+            actions.append("wait_reauth_cooldown")
+            return state, actions
+        # reauth budget exhausted — the SSO itself has expired; only a human login fixes it
         if should_alert(now, state.last_login_alert, policy.alert_cooldown_sec):
             deps.alert("gateway_login",
-                       "Gateway is UP but not logged in. Log in at "
-                       "https://localhost:5000 as alcademe0209 (or over Tailscale at "
-                       "https://100.92.227.2:5000) to arm quotes.")
+                       "Gateway session expired and auto-reauthenticate failed — the "
+                       "browser login has lapsed. Log in at https://localhost:5000 as "
+                       "alcademe0209 (or over Tailscale at https://100.92.227.2:5000).")
             actions.append("alert_login")
             state = replace(state, last_login_alert=now)
         else:
@@ -177,9 +202,9 @@ def run_cycle(health: GatewayHealth, state: SupervisorState, now: float,
     # TICKLE — the gateway is healthy and authenticated.
     deps.tickle()
     actions.append("tickle")
-    # A healthy cycle clears the restart history: a crash next week must not be
-    # judged as "flapping" because of restarts that already recovered.
-    state = replace(state, restart_times=())
+    # A healthy cycle clears the restart AND reauth history: a crash or drop next
+    # week must not be judged against attempts that already recovered.
+    state = replace(state, restart_times=(), reauth_times=())
 
     equity = deps.read_equity()
     if equity is not None:
@@ -249,6 +274,29 @@ def restart_gateway() -> None:
     _log("issued gateway restart via start_min.bat")
 
 
+def reauthenticate(base_url: str = BASE_URL, timeout: float = 8.0) -> bool:
+    """Ask the gateway to re-establish the brokerage session, then confirm.
+
+    POST /iserver/reauthenticate revives a dropped session using the browser
+    SSO cookie WITHOUT a password — it works only while that cookie is still
+    valid. It is asynchronous, so we give it a beat and then re-probe. Returns
+    True only if the session is genuinely authenticated afterwards. This never
+    handles a credential; a lapsed SSO simply returns False and becomes a
+    human-login alert.
+    """
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(base_url + "/iserver/reauthenticate", data=b"", method="POST"),
+            timeout=timeout, context=_ssl_ctx()).read()
+    except Exception:
+        return False
+    time.sleep(4)
+    healed = probe_gateway(base_url, timeout)
+    if healed.authenticated:
+        _log("reauthenticate: session recovered without a human login")
+    return healed.authenticated
+
+
 def _log(msg: str) -> None:
     LOG_DIR.mkdir(exist_ok=True)
     line = f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] {msg}"
@@ -313,6 +361,7 @@ class _LiveDeps:
                                    timeout=6.0, context=_ssl_ctx()).read()
         except Exception:
             pass
+    def reauthenticate(self): return reauthenticate()
     def alert(self, kind, msg): _alert(kind, msg)
     def read_equity(self): return read_equity()
 

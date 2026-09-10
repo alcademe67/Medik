@@ -30,16 +30,21 @@ POLICY = RestartPolicy()
 
 class FakeDeps:
     """Records side effects instead of performing them."""
-    def __init__(self, equity=None):
+    def __init__(self, equity=None, reauth=False):
         self.calls = []
         self.alerts = []
         self._equity = equity
+        self._reauth = reauth      # what reauthenticate() should return
 
     def restart(self):
         self.calls.append("restart")
 
     def tickle(self):
         self.calls.append("tickle")
+
+    def reauthenticate(self):
+        self.calls.append("reauthenticate")
+        return self._reauth
 
     def alert(self, kind, msg):
         self.alerts.append((kind, msg))
@@ -129,15 +134,46 @@ def test_cycle_flapping_escalates_once():
     _, actions2 = run_cycle(GatewayHealth(False, False), state, now + 5, POLICY, deps2)
     assert deps2.alerts == [] and actions2 == ["wait_flapping"]
 
-def test_cycle_unauthed_alerts_login_then_debounces():
-    deps = FakeDeps()
+def test_cycle_unauthed_tries_reauth_before_bothering_a_human():
+    deps = FakeDeps(reauth=True)            # SSO cookie still valid -> recovers
     state, actions = run_cycle(GatewayHealth(True, False), SupervisorState(), 1000.0, POLICY, deps)
+    assert deps.calls == ["reauthenticate"]
+    assert actions == ["reauthenticate_ok"]
+    assert deps.alerts == []                # never alerted a human
+    assert state.reauth_times == ()         # recovery clears the history
+
+def test_cycle_unauthed_reauth_fail_records_a_try():
+    deps = FakeDeps(reauth=False)           # SSO cookie gone -> reauth fails
+    state, actions = run_cycle(GatewayHealth(True, False), SupervisorState(), 1000.0, POLICY, deps)
+    assert deps.calls == ["reauthenticate"]
+    assert actions == ["reauthenticate_try"]
+    assert deps.alerts == []                # not a human's problem yet
+    assert state.reauth_times == (1000.0,)
+
+def test_cycle_reauth_respects_cooldown():
+    st = SupervisorState(reauth_times=(1000.0,))   # last try 10s ago (< 30s cooldown)
+    deps = FakeDeps(reauth=False)
+    _, actions = run_cycle(GatewayHealth(True, False), st, 1010.0, POLICY, deps)
+    assert deps.calls == [] and actions == ["wait_reauth_cooldown"]
+
+def test_cycle_reauth_exhausted_escalates_to_human_login():
+    # max_reauth tries already spent, all past cooldown, none recovered
+    st = SupervisorState(reauth_times=(900.0, 950.0, 1000.0))
+    deps = FakeDeps(reauth=False)
+    state, actions = run_cycle(GatewayHealth(True, False), st, 1040.0, POLICY, deps)
+    assert deps.calls == []                 # reauth budget spent -> doesn't retry
     assert deps.alerts and deps.alerts[0][0] == "gateway_login"
-    assert deps.calls == []                 # no restart, no trade
-    # a follow-up cycle within cooldown stays quiet
-    deps2 = FakeDeps()
-    _, actions2 = run_cycle(GatewayHealth(True, False), state, 1010.0, POLICY, deps2)
+    assert "alert_login" in actions
+    # and it debounces the human alert on the next exhausted cycle
+    deps2 = FakeDeps(reauth=False)
+    _, actions2 = run_cycle(GatewayHealth(True, False), state, 1050.0, POLICY, deps2)
     assert deps2.alerts == [] and actions2 == ["wait_login_alert"]
+
+def test_cycle_healthy_clears_reauth_history():
+    deps = FakeDeps(equity=480.0)
+    st = SupervisorState(reauth_times=(990.0, 995.0))
+    state, _ = run_cycle(GatewayHealth(True, True), st, 1000.0, POLICY, deps)
+    assert state.reauth_times == ()
 
 def test_cycle_healthy_tickles_and_clears_restart_history():
     deps = FakeDeps(equity=480.0)
