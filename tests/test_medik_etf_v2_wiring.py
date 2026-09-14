@@ -33,11 +33,14 @@ def _load_live_module():
     return module
 
 
-def test_scan_universe_is_v2_and_non_inverse():
+def test_scan_universe_is_focused_and_non_inverse():
     live = _load_live_module()
-    assert live.SCAN_UNIVERSE == list(V2_UNIVERSE)
+    # Owner's focused universe (2026-09-14): six liquid, unleveraged majors.
+    assert live.SCAN_UNIVERSE == ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK"]
     assert not (set(live.SCAN_UNIVERSE) & INVERSE), \
-        "inverse funds must not be scanned — v2 removed them for cost reasons"
+        "inverse funds must not be scanned"
+    assert set(live.SCAN_UNIVERSE) <= set(V2_UNIVERSE), \
+        "focused names stay a subset of the vetted non-inverse v2 universe"
 
 
 def test_reconcile_universe_covers_both_versions():

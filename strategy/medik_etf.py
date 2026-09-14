@@ -82,6 +82,7 @@ ETF_PROFILES: dict[str, ETFProfile] = {
     "IWM": ETFProfile("IWM", 1.0, 0.7, "smallcap"),
     # broad market
     "SPY": ETFProfile("SPY", 1.0, 0.85, "broad"),
+    "DIA": ETFProfile("DIA", 1.0, 0.6, "broad"),
     # biotech — low Nasdaq beta
     "LABU": ETFProfile("LABU", 3.0, 0.9, "biotech"),
     "LABD": ETFProfile("LABD", 3.0, -0.9, "biotech"),

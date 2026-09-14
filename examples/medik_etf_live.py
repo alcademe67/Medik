@@ -103,8 +103,15 @@ NY = ZoneInfo("America/New_York")
 # cost-efficient"). Reconciliation still recognises every symbol either
 # version ever traded, so a legacy position in an inverse fund is adopted
 # and managed at startup rather than declared incoherent.
-SCAN_UNIVERSE = list(V2_UNIVERSE)
-RECONCILE_UNIVERSE = list(dict.fromkeys([*V2_UNIVERSE, *ETF_UNIVERSE]))
+# Owner's focused ETF universe (2026-09-14): six liquid, UNLEVERAGED index and
+# sector funds. Deliberately narrower than V2_UNIVERSE — it drops the leveraged
+# funds (TQQQ/SOXL/SNXX) that decay in chop and are unfit for this account, and
+# the extra sector/metal names, to concentrate on the majors the owner named.
+FOCUS_UNIVERSE = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK"]
+SCAN_UNIVERSE = list(FOCUS_UNIVERSE)
+# Reconciliation stays a broad union so a legacy position in ANY prior universe
+# symbol is still recognised and managed at startup, not declared incoherent.
+RECONCILE_UNIVERSE = list(dict.fromkeys([*FOCUS_UNIVERSE, *V2_UNIVERSE, *ETF_UNIVERSE]))
 
 LIVE_ENV_VAR = "MEDIK_ETF_LIVE"
 RISK_ACK_ENV_VAR = "LIVE_RISK_ACK"
