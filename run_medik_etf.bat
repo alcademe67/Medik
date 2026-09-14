@@ -35,6 +35,13 @@ set MEDIK_ETF_MODE=live
 set MEDIK_ETF_LIVE=true
 set LIVE_RISK_ACK=true
 
+REM --- LIVE AUTONOMOUS (owner order 2026-09-14): full autonomous live execution
+REM     authorized. DRY_RUN is OFF — the bot places live orders when a valid
+REM     signal passes every gate (incl. the real-time read_quote check). All
+REM     safety controls remain: real-time-data gate, risk/stop/size limits,
+REM     single-instance lock, and the STOP_MEDIK kill switch.
+set MEDIK_ETF_DRY_RUN=false
+
 REM --- quotes: the TWS socket cannot serve this account's real-time
 REM     feed (error 10089, licence boundary -- see CLAUDE.md). Quotes
 REM     come from the Client Portal Gateway instead; if it is not

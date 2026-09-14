@@ -962,6 +962,30 @@ def connect_with_wait(client, deadline_minutes: int = CONNECT_WAIT_MINUTES):
     return None
 
 
+def _acquire_single_instance() -> bool:
+    """Guarantee only ONE live bot runs at a time (owner requirement: never run
+    multiple instances placing duplicate orders). A stale lock from a crashed
+    run is reclaimed; a lock held by a still-alive foreign PID blocks startup.
+    Windows-only liveness probe; a lock-file glitch fails open so the bot is
+    never blocked from running by lock trouble alone."""
+    lock = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "medik_etf_live.lock")
+    try:
+        if os.path.exists(lock):
+            old = open(lock, encoding="utf-8").read().strip()
+            if old.isdigit() and int(old) != os.getpid():
+                import ctypes
+                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(old))
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    return False
+        open(lock, "w", encoding="utf-8").write(str(os.getpid()))
+        return True
+    except OSError:
+        return True
+
+
 def main() -> int:
     armed, arming_lines = arming_report()
     log("=" * 66)
@@ -972,6 +996,11 @@ def main() -> int:
     # decision outranks everything below it.
     if kill_switch_active():
         log(f"STOP_MEDIK present — not starting. {kill_switch_reason()}")
+        return 0
+
+    # Single-instance guard: never let two live bots run and double an order.
+    if not _acquire_single_instance():
+        log("ANOTHER LIVE INSTANCE IS ALREADY RUNNING — exiting (single-instance lock).")
         return 0
 
     client = IBKRClient()
