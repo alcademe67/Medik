@@ -125,9 +125,11 @@ MIN_REWARD_RISK = 1.5
 
 # Capital ALLOCATION ceiling -- how much capital may be committed to the
 # single best setup. This is NOT a loss limit. The risk ceiling below binds
-# independently and whichever is tighter wins, so raising this can never
+# independently and whichever is tighter wins, so changing this can never
 # increase the dollars at risk on a trade, only the notional deployed.
-MAX_CAPITAL_UTILIZATION = 0.90
+# Owner set 0.80 (2026-09-14): deploy up to 80% of available cash, keep >=20%
+# back. A maximum, not a target -- the risk model uses less when it should.
+MAX_CAPITAL_UTILIZATION = 0.80
 
 MAX_NDX_EXPOSURE_PCT = 90.0    # |net Nasdaq-beta-weighted exposure| cap
 

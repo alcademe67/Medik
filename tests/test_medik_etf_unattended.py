@@ -185,7 +185,7 @@ def test_no_risk_constant_was_relaxed_for_automation():
     assert m.MAX_ACTIVE_POSITIONS == 1
     assert m.MAX_TRADES_PER_SESSION == 3
     assert m.MAX_DAILY_LOSS_PCT == 2.0
-    assert m.MAX_CAPITAL_UTILIZATION == 0.90
+    assert m.MAX_CAPITAL_UTILIZATION == 0.80  # owner tightened 0.90 -> 0.80 (2026-09-14)
     assert m.OPEN_DELAY_MIN == 15
     assert m.CLOSE_BUFFER_MIN == 30
 
