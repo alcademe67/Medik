@@ -161,7 +161,14 @@ MAX_LAST_DEVIATION_PCT = 5.0
 # The QQQ buy-and-hold core position is the obvious candidate — but note that
 # adding it does NOT make the bot able to trade QQQ-correlated ETFs, because
 # the Nasdaq-beta cap still counts that exposure.
-IGNORE_SYMBOLS: tuple = ()
+# Owner's manually-held positions (2026-09-14). PATH and LULU are individual
+# STOCKS, not ETFs — this ETF strategy has no model for them and must not act on
+# them; TQQQ is a leveraged fund the focused universe deliberately excludes and
+# carries the owner's own take-profit. Ignoring them keeps the bot from (a)
+# blocking its own ETF entries on these unmanaged holdings and (b) disturbing
+# positions it has no valid strategy to manage. The bot trades its ETF universe
+# with available cash; these three stay entirely under the owner's control.
+IGNORE_SYMBOLS: tuple = ("PATH", "LULU", "TQQQ")
 
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
