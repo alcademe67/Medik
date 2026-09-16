@@ -19,6 +19,7 @@ from ops.medik_supervisor import (  # noqa: E402
     RestartPolicy,
     SupervisorState,
     decide_gateway_action,
+    is_regular_session,
     prune,
     run_ancillary_cycle,
     run_cycle,
@@ -32,13 +33,15 @@ POLICY = RestartPolicy()
 
 class FakeDeps:
     """Records side effects instead of performing them."""
-    def __init__(self, equity=None, reauth=False, bot_running=True, tws_up=True):
+    def __init__(self, equity=None, reauth=False, bot_running=True, tws_up=True,
+                 market_open=True):
         self.calls = []
         self.alerts = []
         self._equity = equity
         self._reauth = reauth      # what reauthenticate() should return
         self._bot_running = bot_running
         self._tws_up = tws_up
+        self._market_open = market_open
 
     def bot_running(self):
         self.calls.append("bot_running")
@@ -50,6 +53,10 @@ class FakeDeps:
     def tws_api_up(self):
         self.calls.append("tws_api_up")
         return self._tws_up
+
+    def market_open(self):
+        self.calls.append("market_open")
+        return self._market_open
 
     def restart(self):
         self.calls.append("restart")
@@ -305,3 +312,40 @@ def test_ancillary_never_places_orders():
     d = FakeDeps(bot_running=False, tws_up=False)
     run_ancillary_cycle(SupervisorState(), 1000.0, POLICY, d)
     assert not any("order" in c.lower() or "trade" in c.lower() for c in d.calls)
+
+
+# ------------------------------------- market-hours gate on ancillary healing
+
+from datetime import datetime, timezone  # noqa: E402
+
+def test_market_closed_does_not_relaunch_bot_or_alert():
+    # the 2026-09-16 false-flap fix: after close the bot exits on purpose
+    d = FakeDeps(bot_running=False, tws_up=False, market_open=False)
+    state, actions = run_ancillary_cycle(SupervisorState(bot_start_times=(1.0, 2.0)), 1000.0, POLICY, d)
+    assert "start_bot" not in d.calls          # never relaunches while closed
+    assert d.alerts == []                       # never alerts while closed
+    assert actions == ["market_closed_idle"]
+    assert state.bot_start_times == ()          # stale flap history cleared
+
+def test_market_open_still_heals():
+    d = FakeDeps(bot_running=False, tws_up=True, market_open=True)
+    state, actions = run_ancillary_cycle(SupervisorState(), 1000.0, POLICY, d)
+    assert "start_bot" in d.calls               # open -> healing active as before
+
+def test_is_regular_session_weekday_midday_edt():
+    # 2026-09-16 is a Wednesday; 17:00 UTC = 13:00 EDT -> open
+    assert is_regular_session(datetime(2026, 9, 16, 17, 0, tzinfo=timezone.utc)) is True
+
+def test_is_regular_session_after_close():
+    # 20:30 UTC = 16:30 EDT -> closed
+    assert is_regular_session(datetime(2026, 9, 16, 20, 30, tzinfo=timezone.utc)) is False
+
+def test_is_regular_session_weekend():
+    # 2026-09-19 is a Saturday, midday -> closed
+    assert is_regular_session(datetime(2026, 9, 19, 17, 0, tzinfo=timezone.utc)) is False
+
+def test_is_regular_session_est_winter():
+    # 2026-01-14 Wednesday; 15:00 UTC = 10:00 EST -> open (offset 5, not 4)
+    assert is_regular_session(datetime(2026, 1, 14, 15, 0, tzinfo=timezone.utc)) is True
+    # 14:00 UTC = 09:00 EST -> before the 09:30 open
+    assert is_regular_session(datetime(2026, 1, 14, 14, 0, tzinfo=timezone.utc)) is False

@@ -54,7 +54,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -240,11 +240,42 @@ def should_start_bot(now: float, bot_start_times, policy: RestartPolicy) -> tupl
     return True, "ok"
 
 
+def _second_sunday(year: int, month: int) -> int:
+    first_sun = 1 + (6 - datetime(year, month, 1).weekday()) % 7
+    return first_sun + 7
+
+
+def _first_sunday(year: int, month: int) -> int:
+    return 1 + (6 - datetime(year, month, 1).weekday()) % 7
+
+
+def is_regular_session(now_utc: datetime) -> bool:
+    """True during the US regular session (Mon-Fri 09:30-16:00 ET), computing the
+    ET offset from US DST rules directly so this needs no tz database (the
+    supervisor is stdlib-only and must not fail on a missing tzdata). Holidays
+    are NOT modelled — on a holiday the bot simply stays up idle rather than
+    exiting, so it never looks like a crash; the only failure this must avoid is
+    the after-close 'clean exit' being mistaken for a flap."""
+    naive = now_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    y = naive.year
+    edt = datetime(y, 3, _second_sunday(y, 3), 7) <= naive < datetime(y, 11, _first_sunday(y, 11), 6)
+    et = naive - timedelta(hours=4 if edt else 5)
+    if et.weekday() >= 5:
+        return False
+    return dtime(9, 30) <= et.time() < dtime(16, 0)
+
+
 def run_ancillary_cycle(state: SupervisorState, now: float,
                         policy: RestartPolicy, deps) -> tuple[SupervisorState, list]:
     """Heal the two things the gateway cycle does not: the BOT PROCESS and the
     TWS ORDER PATH. Kept separate from run_cycle so the gateway logic (and its
     24 tests) stay exactly as they were.
+
+    Only acts DURING MARKET HOURS. Outside the regular session the bot exits on
+    purpose ('clean exit -- done for the day') and TWS may be closed — relaunching
+    then produced a false 'bot flapping' alert (2026-09-16). When the market is
+    closed a down bot/TWS is expected, so we heal nothing, clear any stale flap
+    history, and stay silent.
 
     * Bot not running        -> relaunch it (run_medik_etf.bat), with the same
       cooldown/flap discipline as the gateway; escalate to a human if it will
@@ -254,6 +285,14 @@ def run_ancillary_cycle(state: SupervisorState, now: float,
       fix it, we surface it fast and debounced.
     """
     actions: list[str] = []
+
+    if not deps.market_open():
+        # market closed: a down bot/TWS is the expected state. Clear stale history
+        # so tomorrow's open starts clean, and do not relaunch or alert.
+        if state.bot_start_times or state.last_bot_alert is not None or state.last_tws_alert is not None:
+            state = replace(state, bot_start_times=(), last_bot_alert=None, last_tws_alert=None)
+        actions.append("market_closed_idle")
+        return state, actions
 
     if not deps.bot_running():
         ok, why = should_start_bot(now, state.bot_start_times, policy)
@@ -357,6 +396,10 @@ def tws_api_up(host: str = TWS_HOST, port: int = TWS_PORT, timeout: float = 3.0)
             return True
     except OSError:
         return False
+
+
+def market_open_now() -> bool:
+    return is_regular_session(datetime.now(timezone.utc))
 
 
 def bot_process_running() -> bool:
@@ -500,6 +543,7 @@ class _LiveDeps:
     def bot_running(self): return bot_process_running()
     def start_bot(self): start_bot()
     def tws_api_up(self): return tws_api_up()
+    def market_open(self): return market_open_now()
 
 
 def main() -> int:
