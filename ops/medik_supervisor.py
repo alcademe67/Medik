@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import ssl
 import subprocess
 import sys
@@ -59,6 +60,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GATEWAY_DIR = Path(r"C:\Users\Administrator\clientportal.gw")
 START_MIN_BAT = GATEWAY_DIR / "start_min.bat"
+BOT_BAT = REPO_ROOT / "run_medik_etf.bat"
+TWS_HOST, TWS_PORT = "127.0.0.1", 7496
 BASE_URL = "https://localhost:5000/v1/api"
 ACCOUNT = os.environ.get("MEDIK_ETF_ACCOUNT", "U26953060")
 
@@ -88,6 +91,8 @@ class RestartPolicy:
     equity_threshold: float = 500.0 # IBKR real-time-data minimum
     max_reauth: int = 3             # /iserver/reauthenticate tries before it's a human's job
     reauth_cooldown_sec: int = 30   # reauth is async; give it a beat between tries
+    bot_relaunch_cooldown_sec: int = 300  # a relaunched bot needs time to boot before judging again
+    max_bot_restarts: int = 4       # bot relaunches within window_sec before escalating to a human
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,9 @@ class SupervisorState:
     last_login_alert: float | None = None
     last_flapping_alert: float | None = None
     crossed_announced: bool = False         # $500 announced once until it dips back
+    bot_start_times: tuple = ()             # unix seconds of recent bot relaunches
+    last_bot_alert: float | None = None     # debounce the bot-flapping human alert
+    last_tws_alert: float | None = None     # debounce the TWS-API-down human alert
 
 
 # ----------------------------------------------------------------- pure logic
@@ -220,6 +228,73 @@ def run_cycle(health: GatewayHealth, state: SupervisorState, now: float,
     return state, actions
 
 
+def should_start_bot(now: float, bot_start_times, policy: RestartPolicy) -> tuple[bool, str]:
+    """(may_start, reason_code). Mirrors should_restart but for the bot process:
+    a fresh relaunch gets bot_relaunch_cooldown_sec to boot before we judge it
+    again, and too many relaunches in the window means a human is needed."""
+    recent = [t for t in bot_start_times if now - t <= policy.window_sec]
+    if recent and (now - max(recent)) < policy.bot_relaunch_cooldown_sec:
+        return False, "cooldown"
+    if len(recent) >= policy.max_bot_restarts:
+        return False, "flapping"
+    return True, "ok"
+
+
+def run_ancillary_cycle(state: SupervisorState, now: float,
+                        policy: RestartPolicy, deps) -> tuple[SupervisorState, list]:
+    """Heal the two things the gateway cycle does not: the BOT PROCESS and the
+    TWS ORDER PATH. Kept separate from run_cycle so the gateway logic (and its
+    24 tests) stay exactly as they were.
+
+    * Bot not running        -> relaunch it (run_medik_etf.bat), with the same
+      cooldown/flap discipline as the gateway; escalate to a human if it will
+      not stay up.
+    * TWS API socket down     -> ALERT only. Bringing 7496 back needs a TWS login,
+      which needs Ali's 2FA — no script can supply that, so we never pretend to
+      fix it, we surface it fast and debounced.
+    """
+    actions: list[str] = []
+
+    if not deps.bot_running():
+        ok, why = should_start_bot(now, state.bot_start_times, policy)
+        if ok:
+            deps.start_bot()
+            actions.append("start_bot")
+            state = replace(state, bot_start_times=prune(state.bot_start_times, now, policy.window_sec) + (now,))
+        elif why == "flapping":
+            if should_alert(now, state.last_bot_alert, policy.alert_cooldown_sec):
+                deps.alert("bot_flapping",
+                           "The ETF bot keeps exiting and will not stay up — needs a human. "
+                           "Check logs/medik_etf_*.log (often TWS API down or a bad config).")
+                actions.append("alert_bot_flapping")
+                state = replace(state, last_bot_alert=now)
+            else:
+                actions.append("wait_bot_flapping")
+        else:
+            actions.append("wait_bot_cooldown")
+    else:
+        # a healthy bot clears its relaunch history and re-arms the alert
+        if state.bot_start_times or state.last_bot_alert is not None:
+            state = replace(state, bot_start_times=(), last_bot_alert=None)
+
+    if not deps.tws_api_up():
+        if should_alert(now, state.last_tws_alert, policy.alert_cooldown_sec):
+            deps.alert("tws_api_down",
+                       "TWS order path is DOWN — port 7496 not listening, so the bot cannot "
+                       "place orders. Open TWS, log in as alcademe67, then File > Global "
+                       "Configuration > API > Settings: enable ActiveX and Socket Clients, "
+                       "port 7496, allow 127.0.0.1, uncheck Read-Only API.")
+            actions.append("alert_tws_down")
+            state = replace(state, last_tws_alert=now)
+        else:
+            actions.append("wait_tws_alert")
+    else:
+        if state.last_tws_alert is not None:
+            state = replace(state, last_tws_alert=None)  # re-arm once it recovers
+
+    return state, actions
+
+
 # ------------------------------------------------------------------- real I/O
 
 def _ssl_ctx():
@@ -274,6 +349,44 @@ def restart_gateway() -> None:
     _log("issued gateway restart via start_min.bat")
 
 
+def tws_api_up(host: str = TWS_HOST, port: int = TWS_PORT, timeout: float = 3.0) -> bool:
+    """True iff TWS's API socket is accepting connections. A plain TCP connect —
+    it never sends an API handshake, so it cannot disturb the bot's own session."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def bot_process_running() -> bool:
+    """True iff a live examples/medik_etf_live.py python process exists. On any
+    doubt returns True, so the supervisor never spawns a DUPLICATE bot — the bot
+    also holds a singleton lock, but not launching is the safer failure."""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+             "Where-Object { $_.CommandLine -like '*medik_etf_live.py*' } | "
+             "Measure-Object).Count"],
+            capture_output=True, text=True, timeout=20)
+        s = (out.stdout or "").strip()
+        return not (s.isdigit() and int(s) == 0)
+    except Exception:
+        return True  # cannot tell -> assume running, never risk a duplicate
+
+
+def start_bot() -> None:
+    """Relaunch the bot via its own wrapper (run_medik_etf.bat carries the live
+    flags and its own 5-minute preflight retry loop). Never touches config."""
+    if not BOT_BAT.exists():
+        _log(f"CANNOT START BOT: {BOT_BAT} not found")
+        return
+    subprocess.Popen(["cmd", "/c", str(BOT_BAT)], cwd=str(REPO_ROOT),
+                     creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    _log("issued bot start via run_medik_etf.bat")
+
+
 def reauthenticate(base_url: str = BASE_URL, timeout: float = 8.0) -> bool:
     """Ask the gateway to re-establish the brokerage session, then confirm.
 
@@ -307,9 +420,28 @@ def _log(msg: str) -> None:
         pass
 
 
+# Durable phone channel (the owner's existing ntfy topic, also used by
+# ConnectivityKeeper) so alerts reach the phone even with NO Claude session open.
+# Only ever carries "a human needs to do X" text — never a credential or a trade.
+NTFY_URL = os.environ.get("MEDIK_NTFY_URL", "https://ntfy.sh/alca-kraken-f07c84d02fd2a45f")
+
+
+def _notify_phone(kind: str, msg: str) -> None:
+    """Best-effort push to the owner's ntfy topic. A failure here must never
+    disturb the supervisor loop, so every error is swallowed."""
+    try:
+        req = urllib.request.Request(
+            NTFY_URL, data=msg.encode("utf-8"), method="POST",
+            headers={"Title": f"MEDIK: {kind}", "Priority": "high", "Tags": "warning"})
+        urllib.request.urlopen(req, timeout=6).read()
+    except Exception:
+        pass
+
+
 def _alert(kind: str, msg: str) -> None:
-    """Record a human-needed alert: to the log, and to a small JSON file a phone
-    notifier (or a watching Claude session) can pick up. No password, no trade."""
+    """Record a human-needed alert: to the log, to a small JSON file a watching
+    Claude session can pick up, AND to the owner's phone via ntfy so it lands
+    even when nothing is watching. No password, no trade."""
     _log(f"ALERT[{kind}]: {msg}")
     try:
         LOG_DIR.mkdir(exist_ok=True)
@@ -319,6 +451,7 @@ def _alert(kind: str, msg: str) -> None:
             encoding="utf-8")
     except OSError:
         pass
+    _notify_phone(kind, msg)
 
 
 LOCK_FILE = LOG_DIR / "medik_supervisor.lock"
@@ -364,6 +497,9 @@ class _LiveDeps:
     def reauthenticate(self): return reauthenticate()
     def alert(self, kind, msg): _alert(kind, msg)
     def read_equity(self): return read_equity()
+    def bot_running(self): return bot_process_running()
+    def start_bot(self): start_bot()
+    def tws_api_up(self): return tws_api_up()
 
 
 def main() -> int:
@@ -382,7 +518,9 @@ def main() -> int:
             health = probe_gateway()
             now = time.time()
             state, actions = run_cycle(health, state, now, policy, deps)
-            _log(f"health(responding={health.responding},auth={health.authenticated}) -> {','.join(actions)}")
+            state, anc = run_ancillary_cycle(state, now, policy, deps)
+            _log(f"health(responding={health.responding},auth={health.authenticated}) "
+                 f"-> {','.join(actions + anc)}")
         except Exception as exc:  # a supervisor that dies helps no one
             _log(f"cycle error (continuing): {type(exc).__name__}: {exc}")
         time.sleep(policy.cycle_sec)

@@ -20,9 +20,11 @@ from ops.medik_supervisor import (  # noqa: E402
     SupervisorState,
     decide_gateway_action,
     prune,
+    run_ancillary_cycle,
     run_cycle,
     should_alert,
     should_restart,
+    should_start_bot,
 )
 
 POLICY = RestartPolicy()
@@ -30,11 +32,24 @@ POLICY = RestartPolicy()
 
 class FakeDeps:
     """Records side effects instead of performing them."""
-    def __init__(self, equity=None, reauth=False):
+    def __init__(self, equity=None, reauth=False, bot_running=True, tws_up=True):
         self.calls = []
         self.alerts = []
         self._equity = equity
         self._reauth = reauth      # what reauthenticate() should return
+        self._bot_running = bot_running
+        self._tws_up = tws_up
+
+    def bot_running(self):
+        self.calls.append("bot_running")
+        return self._bot_running
+
+    def start_bot(self):
+        self.calls.append("start_bot")
+
+    def tws_api_up(self):
+        self.calls.append("tws_api_up")
+        return self._tws_up
 
     def restart(self):
         self.calls.append("restart")
@@ -223,3 +238,70 @@ def test_gateway_launcher_carries_the_afunix_fix():
         return
     text = bat.read_text(encoding="utf-8").lower()
     assert "unixdomain.tmpdir" in text and "c:\\tmp" in text
+
+
+# ------------------------------------------------- ancillary: bot + TWS healing
+
+def test_should_start_bot_ok_when_no_recent():
+    ok, why = should_start_bot(1000.0, (), POLICY)
+    assert ok and why == "ok"
+
+def test_should_start_bot_cooldown_after_recent_start():
+    ok, why = should_start_bot(1000.0, (1000.0 - 10,), POLICY)  # 10s ago < 300s
+    assert not ok and why == "cooldown"
+
+def test_should_start_bot_flapping_escalates():
+    now = 10_000.0
+    # max relaunches, most recent one PAST the cooldown and all inside the window
+    recent = tuple(now - 301 * (i + 1) for i in range(POLICY.max_bot_restarts))
+    ok, why = should_start_bot(now, recent, POLICY)
+    assert not ok and why == "flapping"
+
+def test_ancillary_relaunches_dead_bot():
+    d = FakeDeps(bot_running=False, tws_up=True)
+    state, actions = run_ancillary_cycle(SupervisorState(), 1000.0, POLICY, d)
+    assert "start_bot" in d.calls
+    assert "start_bot" in actions
+    assert state.bot_start_times and state.bot_start_times[-1] == 1000.0
+
+def test_ancillary_healthy_bot_no_relaunch_and_clears_history():
+    d = FakeDeps(bot_running=True, tws_up=True)
+    prior = SupervisorState(bot_start_times=(500.0,), last_bot_alert=400.0)
+    state, actions = run_ancillary_cycle(prior, 1000.0, POLICY, d)
+    assert "start_bot" not in d.calls
+    assert state.bot_start_times == () and state.last_bot_alert is None
+
+def test_ancillary_bot_flapping_alerts_not_hammers():
+    now = 10_000.0
+    recent = tuple(now - 301 * (i + 1) for i in range(POLICY.max_bot_restarts))
+    d = FakeDeps(bot_running=False, tws_up=True)
+    state, actions = run_ancillary_cycle(SupervisorState(bot_start_times=recent), now, POLICY, d)
+    assert "start_bot" not in d.calls          # did NOT relaunch again
+    assert any(k == "bot_flapping" for k, _ in d.alerts)
+    assert state.last_bot_alert == now
+
+def test_ancillary_tws_down_alerts():
+    d = FakeDeps(bot_running=True, tws_up=False)
+    state, actions = run_ancillary_cycle(SupervisorState(), 1000.0, POLICY, d)
+    assert any(k == "tws_api_down" for k, _ in d.alerts)
+    assert "alert_tws_down" in actions
+    assert state.last_tws_alert == 1000.0
+
+def test_ancillary_tws_down_debounced():
+    d = FakeDeps(bot_running=True, tws_up=False)
+    prior = SupervisorState(last_tws_alert=1000.0)
+    state, actions = run_ancillary_cycle(prior, 1000.0 + 60, POLICY, d)  # 60s < 1800s
+    assert d.alerts == []                       # debounced, no repeat
+    assert "wait_tws_alert" in actions
+
+def test_ancillary_tws_recovers_rearms_alert():
+    d = FakeDeps(bot_running=True, tws_up=True)
+    prior = SupervisorState(last_tws_alert=1000.0)
+    state, actions = run_ancillary_cycle(prior, 2000.0, POLICY, d)
+    assert state.last_tws_alert is None         # re-armed for the next outage
+
+def test_ancillary_never_places_orders():
+    # the safety invariant, extended to the ancillary path
+    d = FakeDeps(bot_running=False, tws_up=False)
+    run_ancillary_cycle(SupervisorState(), 1000.0, POLICY, d)
+    assert not any("order" in c.lower() or "trade" in c.lower() for c in d.calls)
