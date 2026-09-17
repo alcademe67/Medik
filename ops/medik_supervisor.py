@@ -481,6 +481,16 @@ def _notify_phone(kind: str, msg: str) -> None:
         pass
 
 
+def _in_login_notify_window() -> bool:
+    """Pacific-local weekday 05:00-14:00 — the only hours a gateway-login PHONE
+    push is useful. The login only matters before the 06:30 PT open; the machine
+    is Pacific, so a gateway drop at night should NOT ping the phone every 30 min
+    until morning. It is still logged, and the morning status task reminds at
+    ~06:15 PT. Other alerts (TWS down, flapping) are unaffected."""
+    now = datetime.now()   # Windows local = America/Vancouver on this machine
+    return now.weekday() < 5 and 5 <= now.hour < 14
+
+
 def _alert(kind: str, msg: str) -> None:
     """Record a human-needed alert: to the log, to a small JSON file a watching
     Claude session can pick up, AND to the owner's phone via ntfy so it lands
@@ -494,6 +504,10 @@ def _alert(kind: str, msg: str) -> None:
             encoding="utf-8")
     except OSError:
         pass
+    # gateway-login is deferrable to the morning; don't phone-spam overnight.
+    if kind == "gateway_login" and not _in_login_notify_window():
+        _log("gateway_login phone push suppressed off-hours (morning check will remind)")
+        return
     _notify_phone(kind, msg)
 
 
