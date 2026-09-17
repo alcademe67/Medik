@@ -24,7 +24,9 @@ buy-and-hold sleeve is tracked beside each as the benchmark.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,6 +41,13 @@ SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK"]
 EQUITY_PER_SLEEVE = 10_000.0
 PER_SHARE, MIN_COMM, MAX_PCT = 0.005, 1.00, 0.01
 SLIPPAGE_BPS, HALF_SPREAD_BPS = 2.0, 1.0
+
+# Divergence alerting: ping the owner's phone when the paper strategy separates
+# from buy-and-hold — every 3 percentage points of cumulative gap (a new level),
+# and on every protective EXIT (a sleeve moving to cash mid-run). Durable: fired
+# by the daily scheduled run, independent of any Claude session.
+NTFY_URL = os.environ.get("MEDIK_NTFY_URL", "https://ntfy.sh/alca-kraken-f07c84d02fd2a45f")
+GAP_ALERT_STEP = 3.0
 
 LOG_DIR = REPO / "logs"
 STATE_FILE = LOG_DIR / "regime_shadow_state.json"
@@ -57,6 +66,17 @@ def _log(msg):
     try:
         (LOG_DIR / "regime_shadow.log").open("a", encoding="utf-8").write(line + "\n")
     except OSError:
+        pass
+
+
+def _notify_phone(title, msg):
+    """Best-effort ntfy push; a failure here must never disturb the shadow."""
+    try:
+        req = urllib.request.Request(
+            NTFY_URL, data=msg.encode("utf-8"), method="POST",
+            headers={"Title": f"MEDIK: {title}", "Priority": "default", "Tags": "chart_with_upwards_trend"})
+        urllib.request.urlopen(req, timeout=6).read()
+    except Exception:
         pass
 
 
@@ -157,6 +177,22 @@ def process(st, data):
         fh.write(json.dumps(rec) + "\n")
     _log(f"processed {latest}: {', '.join(events) if events else 'no state changes'} | "
          f"paper strat {rec['strat_ret_pct']:+.2f}% vs B&H {rec['bh_ret_pct']:+.2f}%")
+
+    # ---- divergence alert (durable ntfy): new 3pp gap level, or a protective EXIT
+    gap = rec["strat_ret_pct"] - rec["bh_ret_pct"]
+    cur_band = int(abs(gap) // GAP_ALERT_STEP)
+    prev_band = st.get("alerted_band", 0)
+    exits = [e for e in events if "EXIT" in e]
+    if exits or cur_band > prev_band:
+        lead = "AHEAD of" if gap >= 0 else "BEHIND"
+        parts = []
+        if exits:
+            parts.append("moved to cash: " + ", ".join(e.split()[0] for e in exits))
+        parts.append(f"paper strategy {abs(gap):.1f}pp {lead} buy&hold "
+                     f"(strat {rec['strat_ret_pct']:+.1f}% vs B&H {rec['bh_ret_pct']:+.1f}%)")
+        _notify_phone("shadow diverging", "; ".join(parts))
+        _log("DIVERGENCE ALERT sent: " + "; ".join(parts))
+    st["alerted_band"] = cur_band
     return st, True
 
 
