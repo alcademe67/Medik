@@ -56,11 +56,17 @@ def _newest_log():
     return max(fs, key=os.path.getmtime) if fs else None
 
 
-def _push(line: str) -> None:
+# A "qualified but blocked" near-miss: the candidate passed the technical gate
+# and score, then was stopped by a downstream check. The bot logs exactly these.
+NEAR = re.compile(r"NO TRADE \| reason=(sizing|net edge vs cost|risk checks)\b(.*)$", re.I)
+
+
+def _push(line: str, title: str = "MEDIK: trade", priority: str = "high",
+          tags: str = "moneybag") -> None:
     try:
         req = urllib.request.Request(
             NTFY_URL, data=line.encode("utf-8"), method="POST",
-            headers={"Title": "MEDIK: trade", "Priority": "high", "Tags": "moneybag"})
+            headers={"Title": title, "Priority": priority, "Tags": tags})
         urllib.request.urlopen(req, timeout=6).read()
     except Exception:
         pass
@@ -71,6 +77,7 @@ def main() -> int:
         return 0
     cur = _newest_log()
     pos = os.path.getsize(cur) if cur else 0     # start at end: only NEW events
+    seen_near: set = set()                        # dedup near-misses; reset per log/day
     while True:
         if STOP_FILE.exists():
             return 0
@@ -78,6 +85,7 @@ def main() -> int:
             f = _newest_log()
             if f != cur:
                 cur, pos = f, 0
+                seen_near.clear()                 # new day's log -> fresh near-miss dedup
             if cur:
                 sz = os.path.getsize(cur)
                 if sz < pos:
@@ -90,6 +98,16 @@ def main() -> int:
                     for line in chunk.splitlines():
                         if PAT.search(line):
                             _push(line.strip()[:300])
+                            continue
+                        m = NEAR.search(line)
+                        if m:
+                            reason, tail = m.group(1), m.group(2).strip()
+                            key = (reason + "|" + tail)[:80]   # dedup identical near-misses
+                            if key not in seen_near:
+                                seen_near.add(key)
+                                _push(f"NEAR-MISS: a setup qualified but was blocked — "
+                                      f"{reason}{(' | ' + tail) if tail else ''}"[:300],
+                                      title="MEDIK: near-miss", priority="default", tags="warning")
         except Exception:
             pass
         time.sleep(8)
