@@ -419,12 +419,41 @@ def bot_process_running() -> bool:
         return True  # cannot tell -> assume running, never risk a duplicate
 
 
+def _clear_stale_bot_lock() -> None:
+    """Delete the bot's single-instance lock if it is stale — the PID is dead, or
+    alive but recycled to a NON-bot process. On 2026-09-18 a recycled PID made the
+    bot refuse to start all morning; this lets the fixing agent clear it before a
+    relaunch. Never removes a lock held by a genuinely-running bot (bot_running()
+    is checked by the caller right before this)."""
+    lock = REPO_ROOT / "medik_etf_live.lock"
+    try:
+        if not lock.exists():
+            return
+        pid = lock.read_text(encoding="utf-8").strip()
+        if not pid.isdigit():
+            lock.unlink(); _log("cleared malformed bot lock"); return
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" "
+             f"-ErrorAction SilentlyContinue).CommandLine"],
+            capture_output=True, text=True, timeout=15)
+        cl = (out.stdout or "").strip()
+        if (not cl) or ("medik_etf_live" not in cl):
+            lock.unlink()
+            _log(f"cleared STALE bot lock (pid {pid} dead or recycled to a non-bot)")
+    except Exception as exc:
+        _log(f"stale-lock check skipped: {type(exc).__name__}")
+
+
 def start_bot() -> None:
     """Relaunch the bot via its own wrapper (run_medik_etf.bat carries the live
-    flags and its own 5-minute preflight retry loop). Never touches config."""
+    flags and its own 5-minute preflight retry loop). Never touches config. Clears
+    a stale single-instance lock first so a recycled-PID lock cannot keep the bot
+    bouncing off startup (the 2026-09-18 lost-morning bug)."""
     if not BOT_BAT.exists():
         _log(f"CANNOT START BOT: {BOT_BAT} not found")
         return
+    _clear_stale_bot_lock()
     subprocess.Popen(["cmd", "/c", str(BOT_BAT)], cwd=str(REPO_ROOT),
                      creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     _log("issued bot start via run_medik_etf.bat")

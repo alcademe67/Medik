@@ -976,24 +976,51 @@ def connect_with_wait(client, deadline_minutes: int = CONNECT_WAIT_MINUTES):
     return None
 
 
+def _pid_is_live_bot(pid: int) -> bool:
+    """True only if `pid` is a live process ACTUALLY running this bot — not just
+    any process that inherited a recycled PID. OpenProcess alone returns a handle
+    for whatever process now owns that PID, which on 2026-09-18 made the bot
+    refuse to start against a stale lock whose PID had been recycled (a lost
+    trading morning). We additionally confirm the command line names this script.
+    On any error we return True (assume a real bot) so the single-instance
+    guarantee — never two live order-placers — is never weakened by a probe glitch."""
+    try:
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+        if not handle:
+            return False                      # PID not alive -> stale lock
+        ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        return True
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" "
+             f"-ErrorAction SilentlyContinue).CommandLine"],
+            capture_output=True, text=True, timeout=10)
+        cl = (out.stdout or "")
+        if cl.strip():
+            return "medik_etf_live" in cl     # recycled non-bot PID -> stale
+        return True                            # alive but cmdline unreadable -> assume bot
+    except Exception:
+        return True                            # can't tell -> keep the guarantee, block
+
+
 def _acquire_single_instance() -> bool:
     """Guarantee only ONE live bot runs at a time (owner requirement: never run
     multiple instances placing duplicate orders). A stale lock from a crashed
-    run is reclaimed; a lock held by a still-alive foreign PID blocks startup.
-    Windows-only liveness probe; a lock-file glitch fails open so the bot is
-    never blocked from running by lock trouble alone."""
+    run — or one whose PID has been recycled to a foreign process — is reclaimed;
+    a lock held by a genuinely-alive OTHER bot blocks startup. A lock-file glitch
+    fails open so the bot is never blocked from running by lock trouble alone."""
     lock = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "medik_etf_live.lock")
     try:
         if os.path.exists(lock):
             old = open(lock, encoding="utf-8").read().strip()
-            if old.isdigit() and int(old) != os.getpid():
-                import ctypes
-                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(old))
-                if handle:
-                    ctypes.windll.kernel32.CloseHandle(handle)
-                    return False
+            if old.isdigit() and int(old) != os.getpid() and _pid_is_live_bot(int(old)):
+                return False
         open(lock, "w", encoding="utf-8").write(str(os.getpid()))
         return True
     except OSError:
