@@ -417,6 +417,33 @@ request. **These rules override the pack's defaults wherever they differ:**
   `trader/` (the pack's state folder) is gitignored because it holds cash and
   positions.
 
+## Kraken account (`.claude/skills/kraken-trader`, added 2026-11-02)
+
+The owner asked for the trader-* workflow to run on their **Kraken crypto
+spot account** "on command, with follow-up". The vendored stock skills
+cannot do that (they block crypto and assume NYSE hours), so `kraken-trader`
+is a separate in-repo skill with one script, `kraken.py`, covering the same
+jobs. Tests are in `tests/test_kraken_trader.py`.
+
+- **Same human gate as IBKR.** `place` requires a risk PASS for the exact
+  order, a recorded explicit yes, and the owner typing YES in an interactive
+  terminal after Kraken's validate-only preview. It refuses a non-interactive
+  shell, so Claude cannot submit, by design. Don't add a bypass, even
+  if asked. The IBKR execution policy above applies here unchanged.
+- **Validation status: NOT VALIDATED.** No crypto strategy has been tested
+  in this repo. `replay` reports history net of fees and prints a verdict;
+  quote it. On the synthetic smoke data, fees alone turned +0.26%/trade
+  gross into −0.54% net.
+- **Status of the live calls:** the API signing matches Kraken's documented
+  test vector and every command runs against mocked responses, but
+  nothing has touched the real API yet. api.kraken.com is blocked from the
+  cloud container, so the first real `status` on the owner's machine is the
+  first live test.
+- **Different account, different facts:** taxable (crypto is not
+  TFSA-eligible), no paper mode for spot, 24/7 markets, fees ~0.25–0.40%
+  per side on Kraken Pro's base tier (`kraken.py` reads the real tier when
+  keys are set). API key must never have withdrawal permission.
+
 ## Account facts (verified, stable)
 
 - **The owner is in Vancouver, British Columbia — Pacific time**
