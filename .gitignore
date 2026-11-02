@@ -8,3 +8,7 @@ journal.sqlite
 # data/, reports/ and logs/ are NOT listed here: each carries its own
 # .gitignore that ignores its contents while tracking its README, so the
 # directories exist in a fresh clone and explain themselves.
+
+# Working state written by the vendored trader-* skills (cash, holdings,
+# orders, broker log) - live account data, keep out of git.
+trader/

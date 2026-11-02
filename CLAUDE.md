@@ -387,6 +387,36 @@ connector, so Claude cannot clear them.
   Locked by `tests/test_service_config.py`. Turn it back on only for a
   strategy re-validated through `net_of_commission.py`.
 
+## Vendored day-trader skills (`.claude/skills/trader-*`, installed 2026-11-02)
+
+Third-party pack (Jakeschincariol/day-trader-skill, MIT, pinned commit in
+`.claude/skills/README-day-trader-skill.md`). Installed at the owner's
+request. **These rules override the pack's defaults wherever they differ:**
+
+- **Untested here, so the backtest verdict applies.** Intraday ORB/flag
+  setups have not been run through `net_of_commission.py`. At this account's
+  size, a round trip costs ~2% of position value, and the pack's own
+  1R-target TSLA example scored "close to a coin flip" *before* costs. Treat
+  any output as research/paper. Do not draft live entries from it until
+  the setup has been re-tested in this repo the same way.
+- **The pack's sizing defaults do not fit this account.** Its example
+  ($5,000 account, $50 max loss, 1R target) breaks rules 1, 2 and 5. Any
+  `trader/config.json` must encode this repo's limits instead: max 1% of
+  net liquidation at risk, R:R ≥ 1:2 (pullback-style) / 1:3 (gate), 20% of
+  available funds per trade, `allow_short`/options/margin off (TFSA,
+  long-only), fractional sizing.
+- **Never let `trader-exit`/`trader-broker flatten` touch the QQQ core
+  holding.** "Flat by the close" applies to day trades only. The core
+  position keeps its no-stop, no-target, no-sell-order policy.
+- **Broker = IBKR, not Alpaca.** Use the pack's Setup B, and the
+  order-routing reality above applies: draft parameters for manual TWS entry,
+  and Claude still never places a live order.
+- **Data:** the scripts read Yahoo/SEC/House Clerk/Nasdaq Trader, and the
+  cloud container blocks all of those (403). They only fetch on the owner's
+  machine. In a cloud session, use the IBKR connector for prices.
+  `trader/` (the pack's state folder) is gitignored because it holds cash and
+  positions.
+
 ## Account facts (verified, stable)
 
 - **The owner is in Vancouver, British Columbia — Pacific time**
