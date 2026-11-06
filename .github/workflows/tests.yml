@@ -45,7 +45,7 @@ jobs:
         # Most of examples/ and the backtest runners are entry-point scripts
         # that no test imports, so this is the only thing standing between a
         # syntax error there and someone finding it at the trading desk.
-        run: python -m compileall -q paths.py ibkr strategy backtest examples service tests
+        run: python -m compileall -q paths.py ibkr kraken strategy backtest examples service tests
 
       - name: Run tests
         run: python -m pytest tests/ -q
@@ -79,7 +79,7 @@ jobs:
           EOF
 
       - name: Import the broker-free modules
-        run: python -c "import paths, ibkr.cache; print(paths.data_dir())"
+        run: python -c "import paths, ibkr.cache, kraken.client, kraken.desk; print(paths.data_dir())"
 
       - name: Run the tests that must not need a broker library
-        run: python -m pytest tests/test_bar_cache.py tests/test_paths.py -q
+        run: python -m pytest tests/test_bar_cache.py tests/test_paths.py tests/test_kraken.py -q

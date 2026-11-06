@@ -350,6 +350,34 @@ connector, so Claude cannot clear them.
   — `examples/cancel_open_orders.py` (dry run) reads TWS directly — and
   prefer cancelling everything and rebuilding over patching a bad list.
 
+## Kraken desk (added 2026-11-06) — READ-ONLY
+
+`kraken/` + `examples/kraken_desk.py` report Kraken quotes, balances and open
+orders; `examples/fetch_kraken_cache.py` fills `data/<cache>/PAIR.json` from
+Kraken's public OHLC in the `ibkr.cache` format. **It cannot trade.**
+`kraken.client` allowlists endpoints (`PUBLIC_ENDPOINTS`, `READ_ONLY_PRIVATE`)
+and refuses AddOrder/EditOrder/Cancel*/Withdraw/transfers before any request
+is sent; the sets are locked by `tests/test_kraken.py`. Do not add an order
+path. If a Kraken order path is ever wanted, it needs an explicit owner
+decision and the same confirm/YES gating as `ibkr/orders.py`. The real
+guarantee is server-side: the key must have only "Query Funds" + "Query
+Open Orders & Trades" (`KRAKEN_API_KEY` / `KRAKEN_API_SECRET` env vars, never
+committed, never pasted into chat).
+
+- **api.kraken.com is blocked from the cloud container** (proxy 403,
+  2026-11-06). Like the TWS scripts, the desk runs on the owner's machine;
+  tests use a fake transport.
+- This is a **separate account from the IBKR TFSA**. None of the risk rules
+  above were written for crypto, and no strategy here was tested on it.
+  Desk quotes are information, not signals. Anything traded off Kraken
+  data goes through `net_of_commission.py` with Kraken's fee schedule first.
+- Kraken data quirks (handled in `kraken/desk.py`): the last OHLC row is
+  still forming and is dropped (rule 7's lesson); OHLC returns at most 720
+  bars (~2y daily); daily bars are UTC days, 7 days a week (~365/yr, so
+  don't annualize by 252); pair keys come back renamed (XBTUSD → XXBTZUSD);
+  staked/earn balances carry suffixes (XBT.M, ETH.F) and are valued via the
+  base asset.
+
 ## Execution policy
 
 - **Claude never places live orders autonomously.** Orders are drafted
@@ -472,6 +500,8 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
 
 ## Layout
 
+- `kraken/` — **read-only** Kraken client (`client.py`, endpoint allowlist)
+  and desk parsing/valuation (`desk.py`)
 - `ibkr/` — TWS connection (`client.py`), order helpers (`orders.py`),
   historical data (`data.py`), market scanner (`scanner.py`)
 - `strategy/` — indicator math (`indicators.py`), signal gate
@@ -488,7 +518,8 @@ Windows toast + `logs/alerts.log`, or SMTP if configured.
   (`lowfreq.py`, `run_lowfreq_comparison.py`)
 - `examples/` — runnable entry points (`connect_test.py`, `run_scan.py`,
   `run_backtest.py`, `manage_open_positions.py`, `check_risk_limits.py`,
-  `show_journal.py`, `review_pending_orders.py`, `fetch_bar_cache.py`)
+  `show_journal.py`, `review_pending_orders.py`, `fetch_bar_cache.py`,
+  `kraken_desk.py`, `fetch_kraken_cache.py`)
 - `service/` — Windows background service: `supervisor.py` (main loop),
   `pipeline.py` (shared scan-score-risk-act cycle, mode-aware),
   `config.py`, `health.py`, `alerts.py`, `market_hours.py`,

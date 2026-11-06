@@ -11,6 +11,7 @@ else assumes.
 | directory | what's in it |
 |---|---|
 | `ibkr/` | TWS connection, orders, historical data, scanner, bar cache |
+| `kraken/` | **Read-only** Kraken desk: quotes, daily bars, balances, open orders. Cannot trade |
 | `strategy/` | Indicators, signal gate, pullback strategy, scoring, risk, journal |
 | `backtest/` | No-lookahead backtester, the commission gate, low-frequency comparison |
 | `examples/` | Runnable entry points |
